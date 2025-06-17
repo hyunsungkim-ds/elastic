@@ -1,0 +1,244 @@
+import os
+import sys
+from typing import List, Tuple
+
+if not os.getcwd() in sys.path:
+    sys.path.append(os.getcwd())
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from scipy.signal import find_peaks
+from tqdm import tqdm
+
+from sync import config, schema, scoring
+
+
+class ReceptionDetector:
+    def __init__(self, events: pd.DataFrame, tracking: pd.DataFrame, fps: int = 25) -> None:
+        schema.synced_event_schema.validate(events)
+        schema.tracking_schema.validate(tracking)
+
+        # Ensure unique indices
+        assert list(events.index.unique()) == [i for i in range(len(events))]
+        assert list(tracking.index.unique()) == [i for i in range(len(tracking))]
+
+        self.events = events.copy()
+
+        for i in self.events["period_id"].unique():
+            period_events: pd.DataFrame = self.events[self.events["period_id"] == i]
+            self.events.loc[period_events.index, "next_player_id"] = period_events.shift(-1)["player_id"]
+            self.events.loc[period_events.index, "next_type"] = period_events.shift(-1)["spadl_type"]
+
+        pass_like = config.PASS_LIKE_OPEN + config.SET_PIECE + ["interception"]
+        # pass_like = ["pass", "cross", "freekick_crossed", "freekick_short"] + config.SET_PIECE_OOP
+        self.passes = self.events[self.events["spadl_type"].isin(pass_like) & self.events["frame"].notna()].copy()
+
+        self.tracking = tracking
+        self.players = self.tracking["player_id"].dropna().unique()
+
+        self.fps = fps
+
+        # Define an episode as a sequence of consecutive in-play frames
+        time_cols = ["frame", "period_id", "timestamp", "utc_timestamp"]
+        self.frames = self.tracking[time_cols].drop_duplicates().sort_values("frame").set_index("frame")
+        self.frames["episode_id"] = 0
+        n_prev_episodes = 0
+
+        for i in self.events["period_id"].unique():
+            period_frames: pd.DataFrame = self.frames.loc[self.frames["period_id"] == i].index.values
+            episode_ids = (np.diff(period_frames, prepend=-5) >= 5).astype(int).cumsum() + n_prev_episodes
+            self.frames.loc[self.frames["period_id"] == i, "episode_id"] = episode_ids
+            n_prev_episodes = episode_ids.max()
+
+    @staticmethod
+    def _find_best_frame(features: pd.DataFrame) -> Tuple[float, pd.DataFrame]:
+        dist_valleys = find_peaks(-features["closest_dist"], prominence=0.5)[0]
+        cand_idxs = [0] + dist_valleys.tolist() + [len(features) - 1]
+
+        height_valleys = find_peaks(-features["ball_height"], prominence=0.5)[0]
+        for i in height_valleys:
+            if not set(range(i - 3, i + 4)) & set(cand_idxs):
+                cand_idxs.append(i)
+
+        accel_peaks = find_peaks(features["ball_accel"], prominence=10, distance=10)[0]
+        for i in accel_peaks:
+            if not set(range(i - 3, i + 4)) & set(cand_idxs):
+                cand_idxs.append(i)
+
+        # cand_idxs = [i for i in cand_idxs if i < len(features) - 9] + [len(features) - 1]
+        cand_idxs = np.sort(np.unique(cand_idxs))
+        cand_features = features.iloc[cand_idxs].copy()
+
+        for i in cand_features.index:
+            cand_features.at[i, "closest_dist"] = features.loc[i - 3 : i + 3, "closest_dist"].min()
+            cand_features.at[i, "next_player_dist"] = features.loc[i - 3 : i + 3, "next_player_dist"].min()
+            cand_features.at[i, "ball_accel"] = features.loc[i - 3 : i + 3, "ball_accel"].max()
+            cand_features.at[i, "ball_height"] = features.loc[i - 3 : i + 3, "ball_height"].min()
+
+        cand_features = cand_features[(cand_features["closest_dist"] < 3) & (cand_features["ball_height"] < 3)]
+
+        if len(cand_features.index) == 0:
+            return np.nan, cand_features
+
+        elif len(cand_features.index) == 1:
+            return cand_features.index[0], cand_features
+
+        else:
+            for i, frame in enumerate(cand_features.index):
+                prev_frame = cand_features.index[i - 1] if i > 0 else features.index[0]
+                next_player_max_dist = features["next_player_dist"].loc[prev_frame:frame].max()
+                next_player_last_dist = features["next_player_dist"].at[frame]
+                cand_features.at[frame, "kick_dist"] = next_player_max_dist - next_player_last_dist
+
+            cand_features["score"] = scoring.score_frames_reception(cand_features)
+            # display(cand_features)
+            return cand_features["score"].idxmax(), cand_features
+
+    def _detect_reception(self, event_idx: int, s: float = 10) -> Tuple[float, str, pd.DataFrame, List[int]]:
+        pass_frame = self.events.at[event_idx, "frame"]
+
+        episode_id = self.frames.at[pass_frame, "episode_id"]
+        episode_last_frame = float(self.frames[self.frames["episode_id"] == episode_id].index[-1])
+        max_frame = min(pass_frame + self.fps * s, episode_last_frame)
+
+        event_type = self.events.at[event_idx, "spadl_type"]
+        shot_types = ["shot", "shot_freekick", "shot_penalty"]
+        pass_types = ["pass", "cross", "freekick_crossed", "freekick_short"] + config.SET_PIECE_OOP
+
+        next_type = self.events.at[event_idx, "next_type"]
+        next_event_frame = self.events.loc[event_idx + 1 :, "frame"].dropna().min()
+
+        if next_event_frame == next_event_frame:
+            max_frame = min(max_frame, next_event_frame)
+
+        if next_type is None:
+            # End of a period
+            return episode_last_frame, None, None, None
+
+        elif next_type in config.SET_PIECE_OOP:
+            # End of an episode (i.e., the game is paused after the event)
+            return episode_last_frame, "out", None, None
+
+        elif event_type in shot_types and self.events.at[event_idx, "outcome"]:
+            # Scoring a goal
+            return episode_last_frame, "goal", None, None
+
+        elif next_type in config.INCOMING + ["shot_block", "keeper_punch"]:
+            # The next event is already a reception event
+            return next_event_frame, self.events.at[event_idx, "next_player_id"], None, None
+
+        elif pass_frame == max_frame:
+            # The pass and the next event occurs almost immediately
+            return max_frame, self.events.at[event_idx, "next_player_id"], None, None
+
+        else:
+            window = self.tracking[(self.tracking["frame"] >= pass_frame) & (self.tracking["frame"] <= max_frame)]
+
+            passer = self.events.at[event_idx, "player_id"]
+            next_player = self.events.at[event_idx, "next_player_id"]
+
+            players = [p for p in window["player_id"].unique() if p is not None]
+            if event_type in pass_types:
+                if self.events.at[event_idx, "outcome"] or self.events.at[event_idx, "offside"]:
+                    players = [p for p in players if p[:4] == passer[:4] and p != passer]  # Teammates are candidates
+                else:
+                    players = [p for p in players if p[:4] != passer[:4]]  # Opponents are candidates
+
+            player_x = window[window["player_id"].isin(players)].pivot_table("x", "frame", "player_id", "first")
+            player_y = window[window["player_id"].isin(players)].pivot_table("y", "frame", "player_id", "first")
+            ball_window = window[window["ball"]]
+
+            features = pd.DataFrame(index=player_x.index)
+            features["ball_height"] = ball_window["z"].values
+            features["ball_accel"] = ball_window["accel"].values
+
+            next_player_window = window[window["player_id"] == next_player]
+            if next_player_window.empty:
+                return np.nan, None, None, None
+
+            next_player_dist_x = next_player_window["x"].values - ball_window["x"].values
+            next_player_dist_y = next_player_window["y"].values - ball_window["y"].values
+            next_player_dists = np.sqrt(next_player_dist_x**2 + next_player_dist_y**2)
+            features["next_player_dist"] = next_player_dists if next_player != passer else 0
+
+            if self.events.at[event_idx, "spadl_type"] == "clearance":
+                features["closest_dist"] = features["next_player_dist"]
+                best_frame, cand_features = ReceptionDetector._find_best_frame(features)
+                return float(best_frame), next_player, features, cand_features.index.tolist()
+
+            if next_type in ["ball_touch", "shot_block"]:
+                features["closest_dist"] = features["next_player_dist"]
+                best_frame, cand_features = ReceptionDetector._find_best_frame(features)
+                return float(best_frame), next_player, features, cand_features.index.tolist()
+
+            else:
+                player_dist_x = player_x[players].values - ball_window[["x"]].values
+                player_dist_y = player_y[players].values - ball_window[["y"]].values
+                player_dists = np.sqrt(player_dist_x**2 + player_dist_y**2)
+
+                features["closest_dist"] = np.nanmin(player_dists, axis=1)
+                features["closest_player"] = np.nanargmin(player_dists, axis=1)
+
+                best_frame, cand_features = ReceptionDetector._find_best_frame(features)
+                receiver = players[features.at[best_frame, "closest_player"]] if best_frame == best_frame else None
+                return float(best_frame), receiver, features, cand_features.index.tolist()
+
+    def run(self, s=10) -> None:
+        self.events["receiver_id"] = None
+        self.events["receive_frame"] = np.nan
+
+        for pass_idx in tqdm(self.passes.index, desc="Detecting receiving events"):
+            frame, receiver, _, _ = self._detect_reception(pass_idx, s)
+            self.passes.at[pass_idx, "receiver_id"] = receiver
+            self.passes.at[pass_idx, "receive_frame"] = frame
+            self.events.at[pass_idx, "receiver_id"] = receiver
+            self.events.at[pass_idx, "receive_frame"] = frame
+
+    def plot_window_features(self, pass_idx: int, save_path: str = None) -> pd.DataFrame:
+        matched_frame, receiver, features, cand_frames = self._detect_reception(pass_idx)
+
+        pass_type = self.events.at[pass_idx, "spadl_type"]
+        passer = self.events.at[pass_idx, "player_id"]
+        print(f"Current event: {pass_type} by {passer}")
+
+        next_type = self.events.at[pass_idx, "next_type"]
+        next_player = self.events.at[pass_idx, "next_player_id"]
+        print(f"Next event: {next_type} by {next_player}")
+
+        if matched_frame is not None and matched_frame == matched_frame:
+            matched_period = self.frames.at[matched_frame, "period_id"]
+            matched_time = self.frames.at[matched_frame, "timestamp"]
+            print(f"\nDetected receiver: {receiver}")
+            print(f"Receiving frame: {matched_frame}")
+            print(f"Receiving time: P{matched_period}-{matched_time}")
+
+        if isinstance(features, pd.DataFrame) and not features.empty:
+            features["ball_accel"] = features["ball_accel"] / 5
+            features_to_plot = ["closest_dist", "ball_accel", "next_player_dist"]
+
+            plt.rcParams.update({"font.size": 18})
+            plt.figure(figsize=(8, 6))
+            plt.plot(features[features_to_plot], label=features_to_plot)
+
+            ymax = 25
+            plt.ylim(0, ymax)
+            if isinstance(cand_frames, List):
+                for frame in cand_frames:
+                    if frame == matched_frame:
+                        plt.vlines(frame, 0, ymax, color="red", linestyles="-")
+                    else:
+                        plt.vlines(frame, 0, ymax, color="black", linestyles="--")
+
+            elif not pd.isna(matched_frame):
+                plt.vlines(matched_frame, 0, ymax, color="red", linestyles="-")
+
+            plt.legend(loc="upper right", fontsize=15)
+            plt.grid(axis="y")
+
+            if save_path is not None:
+                plt.savefig(save_path, bbox_inches="tight")
+
+            plt.show()
+
+            return features

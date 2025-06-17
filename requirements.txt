@@ -1,0 +1,8 @@
+fastparquet
+ffmpeg
+matplotlib
+numpy
+pandas
+pyarrow
+py7zr
+scipy
