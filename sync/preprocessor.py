@@ -146,7 +146,6 @@ class Preprocessor:
                     # accel = savgol_filter(np.diff(speed) * self.fps, window_length=9, polyorder=2)
                     # period_traces.loc[period_traces.index[1:-1], "accel"] = accel
                     # period_traces["accel"] = period_traces["accel"].bfill().ffill()
-                    period_traces.loc[period_traces.index[1:-1], "speed"] = np.sqrt(vx**2 + vy**2)
                     ax = savgol_filter(np.diff(vx) * self.fps, window_length=9, polyorder=2)
                     ay = savgol_filter(np.diff(vy) * self.fps, window_length=9, polyorder=2)
                     period_traces.loc[period_traces.index[1:-1], "accel"] = np.sqrt(ax**2 + ay**2)
@@ -210,14 +209,13 @@ def find_spadl_event_types(events: pd.DataFrame, sort=True) -> pd.DataFrame:
         "outcome",
     ] = True
 
-    # Duel-like: aerial, tackle
+    # Duel-like: aerial, tackle, bad_touch
     is_aerial = (events["action_type"].shift(1) == "aerial") & (events["player_id"].shift(1) == events["player_id"])
     events["aerial"] = False
     events.loc[is_aerial, "aerial"] = True
-    # events.loc[events["action_type"] == "aerial", "spadl_type"] = "aerial_duel"
-    # events.loc[events["action_type"] == "50/50", "spadl_type"] = "ground_duel"
     events.loc[events["action_type"] == "attempted_tackle", "spadl_type"] = "tackle"
     events.loc[events["action_type"] == "attempted_tackle", "outcome"] = False
+    events.loc[events["action_type"] == "ball_touch", "spadl_type"] = "bad_touch"
 
     # Keeper actions: keeper_{save|claim|punch|pick_up|sweeper}
     is_save = events["action_type"] == "save"
@@ -236,15 +234,13 @@ def find_spadl_event_types(events: pd.DataFrame, sort=True) -> pd.DataFrame:
     types_as_is = [
         "throw_in",
         "take_on",
-        "foul",
         "tackle",
         "interception",
         "clearance",
         "bad_touch",
         "ball_recovery",
-        "ball_touch",
         "dispossessed",
-        # "shield_ball_oop",
+        "foul",
     ]
     events_as_is = events[events["action_type"].isin(types_as_is)]
     events.loc[events_as_is.index, "spadl_type"] = events_as_is["action_type"]

@@ -1,5 +1,3 @@
-"""Implements the ETSY algorithm."""
-
 import os
 import sys
 from typing import Callable, List, Tuple
@@ -17,8 +15,8 @@ from sync import config, schema, scoring
 from sync.reception import ReceptionDetector
 
 
-class ELASTIC:  # Event-Location-AgnoSTIC Synchronizer
-    """Synchronize event and tracking data using the ETSY algorithm.
+class ELASTIC:
+    """Synchronize event and tracking data using Event-Location-AgnoSTIC Synchronizer (ELASTIC).
 
     Parameters
     ----------
@@ -416,7 +414,7 @@ class ELASTIC:  # Event-Location-AgnoSTIC Synchronizer
 
     @staticmethod
     def _find_matching_func(event_type: str) -> Tuple[float, Callable]:
-        if event_type in config.PASS_LIKE_OPEN + ["ball_touch"]:
+        if event_type in config.PASS_LIKE_OPEN + ["bad_touch"]:
             s = config.TIME_PASS_LIKE_OPEN
             matching_func = ELASTIC._detect_pass_like
         elif event_type in config.INCOMING + ["take_on"]:
@@ -476,15 +474,15 @@ class ELASTIC:  # Event-Location-AgnoSTIC Synchronizer
         ball_y = ball_window["y"].values
         player_x = player_window["x"].values
         player_y = player_window["y"].values
-        event_x = self.events.at[event_idx, "start_x"]
-        event_y = self.events.at[event_idx, "start_y"]
+        # event_x = self.events.at[event_idx, "start_x"]
+        # event_y = self.events.at[event_idx, "start_y"]
 
         features = pd.DataFrame(index=player_window.index)
         features["frame_delay"] = (features.index.values - event_frame).clip(0)
         features["ball_accel"] = ball_window["accel"].values
         features["ball_height"] = ball_window["z"].values
         features["player_dist"] = np.sqrt((player_x - ball_x) ** 2 + (player_y - ball_y) ** 2)
-        features["event_dist"] = np.sqrt((event_x - ball_x) ** 2 + (event_y - ball_y) ** 2)
+        # features["event_dist"] = np.sqrt((event_x - ball_x) ** 2 + (event_y - ball_y) ** 2)
 
         if oppo_window is not None:
             oppo_x = oppo_window["x"].values
@@ -561,8 +559,7 @@ class ELASTIC:  # Event-Location-AgnoSTIC Synchronizer
         self.events = self.reception_det.events
 
         # Post-synchronize remaining events
-        post_sync_types = ["take_on", "dispossessed", "ball_touch", "foul"]
-        post_sync_events = self.events[self.events["spadl_type"].isin(post_sync_types)]
+        post_sync_events = self.events[self.events["spadl_type"].isin(config.MINOR)]
         self.events.loc[post_sync_events.index, "frame"] = np.nan
         self.matched_frames.loc[post_sync_events.index] = np.nan
 
@@ -572,7 +569,7 @@ class ELASTIC:  # Event-Location-AgnoSTIC Synchronizer
             prev_player = self.events.at[i - 1, "player_id"]
             prev_receiver = self.events.at[i - 1, "receiver_id"]
 
-            if event_type in ["take_on", "ball_touch"]:
+            if event_type in ["take_on", "bad_touch"]:
                 prev_receive_frame = self.events.at[i - 1, "receive_frame"]
                 if event_player == prev_receiver and not np.isnan(prev_receive_frame):
                     self.matched_frames[i] = prev_receive_frame
@@ -691,8 +688,7 @@ class ELASTIC:  # Event-Location-AgnoSTIC Synchronizer
             if duel_like:
                 features_to_plot = ["player_dist", "ball_accel", "oppo_dist"]
             else:
-                features_to_plot = ["player_dist", "event_dist", "ball_height", "ball_accel"]
-                # features_to_plot = ["player_dist", "event_dist"]
+                features_to_plot = ["player_dist", "ball_accel", "frame_delay"]
 
             plt.rcParams.update({"font.size": 18})
             plt.figure(figsize=(8, 6))

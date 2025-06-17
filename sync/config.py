@@ -1,5 +1,3 @@
-"""Defines ETSY configuration."""
-
 FIELD_LENGTH = 105.0  # unit: meters
 FIELD_WIDTH = 68.0  # unit: meters
 
@@ -26,7 +24,6 @@ SPADL_TYPES = [
     "bad_touch",
     "goalkick",
     "ball_recovery",  # new, incoming-like
-    "ball_touch",  # new, not handled
     "dispossessed",  # new, not handled
     "shot_block",  # new, pass-like
     "keeper_sweeper",  # new, incoming-like
@@ -37,11 +34,10 @@ PASS_LIKE_OPEN = ["pass", "cross", "shot", "shot_block", "clearance", "keeper_pu
 INCOMING = ["interception", "ball_recovery", "keeper_save", "keeper_claim", "keeper_pick_up", "keeper_sweeper"]
 SET_PIECE_OOP = ["throw_in", "corner_crossed", "corner_short", "goalkick"]
 SET_PIECE = SET_PIECE_OOP + ["freekick_crossed", "freekick_short", "shot_freekick", "shot_penalty"]
+MINOR = ["take_on", "foul", "bad_touch", "dispossessed"]
 
 BAD_TOUCH = ["bad_touch"]
 FAULT_LIKE = ["foul", "tackle"]
-DUEL_LIKE = ["take_on", "dispossessed", "tackle"]
-
 
 TIME_PASS_LIKE_OPEN = 5  # unit: seconds
 TIME_INCOMING = 5  # unit: seconds
