@@ -615,7 +615,7 @@ class ELASTIC:
         self.events["synced_ts"] = self.events["frame"].map(self.frames["timestamp"].to_dict())
         self.events["receive_ts"] = self.events["receive_frame"].map(self.frames["timestamp"].to_dict())
 
-    def plot_window_features(self, event_idx: int, save_path: str = None) -> pd.DataFrame:
+    def plot_window_features(self, event_idx: int, display_title: bool = True, save_path: str = None) -> pd.DataFrame:
         """
         Plots the feature time-series for a given event for validation.
 
@@ -635,7 +635,7 @@ class ELASTIC:
         event = self.events.loc[event_idx]
         event_type = event["spadl_type"]
         s, matching_func = ELASTIC._find_matching_func(event_type)
-        print(f"Event {event_idx}: {event_type} by {self.events.at[event_idx, 'player_id']}")
+        print(f"Event {event_idx}: {event_type} by {event['player_id']}")
 
         duel_like = event_type in ["tackle"]
         event_frame, player_window, ball_window, oppo_window = self._window_of_frames(event, s, duel_like)
@@ -704,6 +704,9 @@ class ELASTIC:
 
             plt.legend(loc="upper right", fontsize=15)
             plt.grid(axis="y")
+
+            if display_title:
+                plt.title(f"{event_type} at frame {best_frame}")
 
             if save_path is not None:
                 plt.savefig(save_path, bbox_inches="tight")

@@ -195,7 +195,7 @@ class ReceiveDetector:
             self.events.at[pass_idx, "receiver_id"] = receiver
             self.events.at[pass_idx, "receive_frame"] = frame
 
-    def plot_window_features(self, pass_idx: int, save_path: str = None) -> pd.DataFrame:
+    def plot_window_features(self, pass_idx: int, display_title: bool = True, save_path: str = None) -> pd.DataFrame:
         best_frame, receiver, features, cand_features = self._detect_receive(pass_idx)
 
         pass_type = self.events.at[pass_idx, "spadl_type"]
@@ -234,6 +234,9 @@ class ReceiveDetector:
 
             plt.legend(loc="upper right", fontsize=15)
             plt.grid(axis="y")
+
+            if display_title:
+                plt.title(f"receive at frame {int(best_frame)}")
 
             if save_path is not None:
                 plt.savefig(save_path, bbox_inches="tight")
