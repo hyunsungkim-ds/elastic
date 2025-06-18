@@ -37,7 +37,7 @@ Using `ELASTIC.plot_window_features` and `ReceiveDetector.plot_window_features`,
 ## Data Availability
 Our code requires tracking data in the [kloppy](https://kloppy.pysport.org) format and event data in the [SPADL](https://socceraction.readthedocs.io/en/latest/documentation/spadl/spadl.html) format. However, the dataset used in this project is proprietary and cannot be publicly shared as it is an internal asset of the data provider. We will soon upload the tutorial code using the public [Metrica dataset](https://github.com/metrica-sports/sample-data.git), so that users can easily test the code without their own datasets.
 
-If you have your own event and tracking datasets, you can use them for training and testing component models described below. In the current implementation, the data should be placed in the following paths:
+If you have your own event and tracking datasets, you can apply ELASTIC by placing them within the following paths:
 - Match lineups: A single parquet file at `LINEUP_PATH=data/ajax/lineup/line_up.parquet`
 - Event data: A single parquet file at `EVENT_PATH=data/ajax/event/event.parquet`
 - Tracking data: per-match Parquet files in `TRACKING_PATH=data/ajax/tracking` directory
