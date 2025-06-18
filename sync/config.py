@@ -1,3 +1,8 @@
+LINEUP_PATH = "data/ajax/lineup/line_up.parquet"
+EVENT_PATH = "data/ajax/event/event.parquet"
+TRACKING_DIR = "data/ajax/tracking"
+OUTPUT_DIR = "data/ajax/event_synced"
+
 FIELD_LENGTH = 105.0  # unit: meters
 FIELD_WIDTH = 68.0  # unit: meters
 
@@ -23,21 +28,18 @@ SPADL_TYPES = [
     "clearance",
     "bad_touch",
     "goalkick",
-    "ball_recovery",  # new, incoming-like
-    "dispossessed",  # new, not handled
     "shot_block",  # new, pass-like
-    "keeper_sweeper",  # new, incoming-like
+    "ball_recovery",  # new, incoming
+    "keeper_sweeper",  # new, incoming
+    "dispossessed",  # new, minor
 ]
 SPADL_BODYPARTS = ["foot", "head", "other", "head/other", "foot_left", "foot_right"]
 
-PASS_LIKE_OPEN = ["pass", "cross", "shot", "shot_block", "clearance", "keeper_punch"]
-INCOMING = ["interception", "ball_recovery", "keeper_save", "keeper_claim", "keeper_pick_up", "keeper_sweeper"]
-SET_PIECE_OOP = ["throw_in", "corner_crossed", "corner_short", "goalkick"]
-SET_PIECE = SET_PIECE_OOP + ["freekick_crossed", "freekick_short", "shot_freekick", "shot_penalty"]
+PASS_LIKE_OPEN = ["pass", "cross", "shot", "clearance", "keeper_punch", "shot_block"]
+SET_PIECE_OOP = ["throw_in", "goalkick", "corner_short", "corner_crossed"]
+SET_PIECE = SET_PIECE_OOP + ["freekick_short", "freekick_crossed", "shot_freekick", "shot_penalty"]
+INCOMING = ["interception", "keeper_save", "keeper_claim", "keeper_pick_up", "keeper_sweeper", "ball_recovery"]
 MINOR = ["take_on", "foul", "bad_touch", "dispossessed"]
-
-BAD_TOUCH = ["bad_touch"]
-FAULT_LIKE = ["foul", "tackle"]
 
 TIME_PASS_LIKE_OPEN = 5  # unit: seconds
 TIME_INCOMING = 5  # unit: seconds

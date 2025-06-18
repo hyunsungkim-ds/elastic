@@ -79,7 +79,7 @@ def score_frames_dispossessed(features: pd.DataFrame) -> np.ndarray:
     return ball_accel_score + player_dist_score + kick_dist_score
 
 
-def score_frames_reception(features: pd.DataFrame) -> np.ndarray:
+def score_frames_receive(features: pd.DataFrame) -> np.ndarray:
     ball_accel_score = 25 * ball_accel_func(features["ball_accel"].values)
     closest_dist_score = 25 * player_dist_func(features["closest_dist"].values)
     next_player_dist_score = 25 * player_dist_func(features["next_player_dist"].values)

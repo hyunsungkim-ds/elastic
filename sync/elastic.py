@@ -12,7 +12,7 @@ from scipy.signal import find_peaks, savgol_filter
 from tqdm import tqdm
 
 from sync import config, schema, scoring
-from sync.reception import ReceptionDetector
+from sync.receive import ReceiveDetector
 
 
 class ELASTIC:
@@ -56,7 +56,7 @@ class ELASTIC:
         # Store synchronization results
         self.last_matched_frame = 0
         self.matched_frames = pd.Series(np.nan, index=self.events.index)
-        self.reception_det = None
+        self.receive_det = None
 
     @staticmethod
     def _format_timestamp(total_seconds: float) -> str:
@@ -211,7 +211,7 @@ class ELASTIC:
         return event_frame, player_window, ball_window, oppo_window
 
     @staticmethod
-    def _detect_pass_like(features: pd.DataFrame, *args) -> Tuple[float, pd.DataFrame]:
+    def _detect_pass_like(features: pd.DataFrame, *args) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
         dist_valleys = find_peaks(-features["player_dist"], prominence=1)[0]
         candidates = dist_valleys.tolist() + [0]
 
@@ -247,10 +247,10 @@ class ELASTIC:
                 cand_features.at[frame, "kick_dist"] = features["player_dist"].loc[frame:next_frame].max()
 
             cand_features["score"] = scoring.score_frames_elastic(cand_features)
-            return cand_features["score"].idxmax(), features, cand_features.index
+            return cand_features["score"].idxmax(), features, cand_features
 
     @staticmethod
-    def _detect_incoming(features: pd.DataFrame, savgol_wlen=9, fps=25) -> Tuple[float, pd.DataFrame, List[int]]:
+    def _detect_incoming(features: pd.DataFrame, savgol_wlen=9, fps=25) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
         if len(features) > savgol_wlen:
             features["player_dist"] = savgol_filter(features["player_dist"], window_length=savgol_wlen, polyorder=2)
 
@@ -299,10 +299,10 @@ class ELASTIC:
                 cand_features.at[frame, "kick_dist"] = features["player_dist"].loc[prev_frame:frame].max()
 
             cand_features["score"] = scoring.score_frames_elastic(cand_features)
-            return cand_features["score"].idxmax(), features, cand_features.index.tolist()
+            return cand_features["score"].idxmax(), features, cand_features
 
     @staticmethod
-    def _detect_dispossessed(features: pd.DataFrame, *args) -> Tuple[float, pd.DataFrame, List[int]]:
+    def _detect_dispossessed(features: pd.DataFrame, *args) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
         dist_valleys = find_peaks(-features["player_dist"], prominence=1)[0]
         candidates = dist_valleys.tolist() + [0]
 
@@ -338,10 +338,10 @@ class ELASTIC:
                 cand_features.at[frame, "kick_dist"] = features["player_dist"].loc[frame:next_frame].max()
 
             cand_features["score"] = scoring.score_frames_dispossessed(cand_features)
-            return cand_features["score"].idxmax(), features, cand_features.index.tolist()
+            return cand_features["score"].idxmax(), features, cand_features
 
     @staticmethod
-    def _detect_tackle(features: pd.DataFrame, savgol_wlen=9, fps=25) -> Tuple[float, pd.DataFrame, List[int]]:
+    def _detect_tackle(features: pd.DataFrame, savgol_wlen=9, fps=25) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
         if len(features) > savgol_wlen:
             features["player_dist"] = savgol_filter(features["player_dist"], window_length=savgol_wlen, polyorder=2)
 
@@ -394,7 +394,7 @@ class ELASTIC:
         else:
             cand_features["score"] = scoring.score_frames_tackle(cand_features)
             # display(cand_features)
-            return cand_features["score"].idxmax(), features, cand_features.index.tolist()
+            return cand_features["score"].idxmax(), features, cand_features
 
     @staticmethod
     def _detect_setpiece(features: pd.DataFrame, *args) -> Tuple[float, pd.DataFrame, None]:
@@ -515,10 +515,10 @@ class ELASTIC:
             window_args = (ret[0], player_window, ball_window, oppo_window)
 
             if len(player_window) > 0:
-                matched_frame = self._find_matching_frame(matching_func, i, *window_args)[0]
-                if matched_frame == matched_frame:
-                    self.matched_frames[i] = matched_frame
-                    self.last_matched_frame = matched_frame
+                best_frame = self._find_matching_frame(matching_func, i, *window_args)[0]
+                if best_frame == best_frame:
+                    self.matched_frames[i] = best_frame
+                    self.last_matched_frame = best_frame
 
     def synchronize(self) -> None:
         """
@@ -528,9 +528,9 @@ class ELASTIC:
 
         for period in self.events["period_id"].unique():
             try:  # Find the kickoff event of the period
-                matched_frame = self.detect_kickoff(period=period)
-                self.last_matched_frame = matched_frame
-                self.matched_frames.loc[kickoff_idx] = matched_frame
+                best_frame = self.detect_kickoff(period=period)
+                self.last_matched_frame = best_frame
+                self.matched_frames.loc[kickoff_idx] = best_frame
 
             except ValueError:  # If there is no candidate frames for the kickoff, then find the second event
                 kickoff_frame = self.frames[self.frames["period_id"] == period].index[0]
@@ -539,10 +539,10 @@ class ELASTIC:
 
                 kickoff_idx += 1
                 window_args = self._window_of_frames(self.events.loc[kickoff_idx], 5)
-                matched_frame = self._find_matching_frame(ELASTIC._detect_pass_like, kickoff_idx, *window_args)[0]
+                best_frame = self._find_matching_frame(ELASTIC._detect_pass_like, kickoff_idx, *window_args)[0]
 
             # Adjust the time bias between events and tracking
-            ts_offset = self.events.at[kickoff_idx, "utc_timestamp"] - self.frames.at[matched_frame, "utc_timestamp"]
+            ts_offset = self.events.at[kickoff_idx, "utc_timestamp"] - self.frames.at[best_frame, "utc_timestamp"]
             self.events.loc[self.events["period_id"] == period, "utc_timestamp"] -= ts_offset
             kickoff_idx = len(self.events[self.events["period_id"] == period])
 
@@ -553,10 +553,9 @@ class ELASTIC:
         # self.events["seconds"] = (self.matched_frames / self.fps).round(2)
 
         # Detect receptions
-        self.reception_det = ReceptionDetector(self.events, self.tracking)
-        self.reception_det.run()
-        # self.events = pd.merge(self.events, self.reception_det.events, how="left")
-        self.events = self.reception_det.events
+        self.receive_det = ReceiveDetector(self.events, self.tracking)
+        self.receive_det.run()
+        self.events = self.receive_det.events
 
         # Post-synchronize remaining events
         post_sync_events = self.events[self.events["spadl_type"].isin(config.MINOR)]
@@ -608,12 +607,11 @@ class ELASTIC:
             window_args = (ret[0], player_window, ball_window)
 
             if len(player_window) > 0:
-                matched_frame = self._find_matching_frame(matching_func, i, *window_args)[0]
-                if matched_frame == matched_frame:
-                    self.matched_frames[i] = matched_frame
+                best_frame = self._find_matching_frame(matching_func, i, *window_args)[0]
+                if best_frame == best_frame:
+                    self.matched_frames[i] = best_frame
 
         self.events["frame"] = self.matched_frames
-        # self.events["seconds"] = (self.matched_frames / self.fps).round(2)
         self.events["synced_ts"] = self.events["frame"].map(self.frames["timestamp"].to_dict())
         self.events["receive_ts"] = self.events["receive_frame"].map(self.frames["timestamp"].to_dict())
 
@@ -632,8 +630,6 @@ class ELASTIC:
             Features for each frame in the window that is used for matching.
         """
         prev_frames = self.matched_frames.loc[: event_idx - 1].values
-        # prev_receive_frames = self.events.loc[: event_idx - 1, "receive_frame"].values
-        # min_frame = np.nanmax([np.nanmax(prev_frames), np.nanmax(prev_receive_frames), 0])
         min_frame = np.nanmax([np.nanmax(prev_frames), 0])
 
         event = self.events.loc[event_idx]
@@ -648,12 +644,12 @@ class ELASTIC:
         oppo_window = oppo_window.loc[min_frame:].copy() if oppo_window is not None else None
         window_args = (event_frame, player_window, ball_window, oppo_window)
 
-        matched_frame, features, cand_frames = self._find_matching_frame(matching_func, event_idx, *window_args)
+        best_frame, features, cand_features = self._find_matching_frame(matching_func, event_idx, *window_args)
 
-        if not pd.isna(matched_frame):
-            matched_period = self.frames.at[matched_frame, "period_id"]
-            matched_time = self.frames.at[matched_frame, "timestamp"]
-            print(f"Matched frame: {matched_frame}")
+        if not pd.isna(best_frame):
+            matched_period = self.frames.at[best_frame, "period_id"]
+            matched_time = self.frames.at[best_frame, "timestamp"]
+            print(f"Matched frame: {best_frame}")
             print(f"Matched time: P{matched_period}-{matched_time}")
 
         else:
@@ -696,17 +692,15 @@ class ELASTIC:
 
             ymax = 25
             plt.ylim(0, ymax)
-            plt.vlines(event_frame, 0, ymax, color="k", linestyles="-")
+            plt.vlines(event_frame, 0, ymax, color="k", linestyles="-", label="annot_frame")
 
-            if isinstance(cand_frames, List):
-                for frame in cand_frames:
-                    if frame == matched_frame:
-                        plt.vlines(frame, 0, ymax, color="red", linestyles="-")
-                    else:
-                        plt.vlines(frame, 0, ymax, color="black", linestyles="--")
+            if isinstance(cand_features, pd.DataFrame):
+                cand_frames = [t for t in cand_features.index if t != best_frame]
+                plt.vlines(cand_frames, 0, ymax, color="black", linestyles="--", label="cand_frame")
+                plt.vlines(best_frame, 0, ymax, color="red", linestyles="-", label="best_frame")
 
-            elif not pd.isna(matched_frame):
-                plt.vlines(matched_frame, 0, ymax, color="red", linestyles="-")
+            elif not pd.isna(best_frame):
+                plt.vlines(best_frame, 0, ymax, color="red", linestyles="-", label="best_frame")
 
             plt.legend(loc="upper right", fontsize=15)
             plt.grid(axis="y")
@@ -716,4 +710,4 @@ class ELASTIC:
 
             plt.show()
 
-        return features
+        return cand_features

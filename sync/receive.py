@@ -14,7 +14,7 @@ from tqdm import tqdm
 from sync import config, schema, scoring
 
 
-class ReceptionDetector:
+class ReceiveDetector:
     def __init__(self, events: pd.DataFrame, tracking: pd.DataFrame, fps: int = 25) -> None:
         schema.synced_event_schema.validate(events)
         schema.tracking_schema.validate(tracking)
@@ -91,11 +91,11 @@ class ReceptionDetector:
                 next_player_last_dist = features["next_player_dist"].at[frame]
                 cand_features.at[frame, "kick_dist"] = next_player_max_dist - next_player_last_dist
 
-            cand_features["score"] = scoring.score_frames_reception(cand_features)
+            cand_features["score"] = scoring.score_frames_receive(cand_features)
             # display(cand_features)
             return cand_features["score"].idxmax(), cand_features
 
-    def _detect_reception(self, event_idx: int, s: float = 10) -> Tuple[float, str, pd.DataFrame, List[int]]:
+    def _detect_receive(self, event_idx: int, s: float = 10) -> Tuple[float, str, pd.DataFrame, pd.DataFrame]:
         pass_frame = self.events.at[event_idx, "frame"]
 
         episode_id = self.frames.at[pass_frame, "episode_id"]
@@ -125,7 +125,7 @@ class ReceptionDetector:
             return episode_last_frame, "goal", None, None
 
         elif next_type in config.INCOMING + ["shot_block", "keeper_punch"]:
-            # The next event is already a reception event
+            # The next event is already a receive event
             return next_event_frame, self.events.at[event_idx, "next_player_id"], None, None
 
         elif pass_frame == max_frame:
@@ -164,12 +164,12 @@ class ReceptionDetector:
 
             if self.events.at[event_idx, "spadl_type"] == "clearance":
                 features["closest_dist"] = features["next_player_dist"]
-                best_frame, cand_features = ReceptionDetector._find_best_frame(features)
+                best_frame, cand_features = ReceiveDetector._find_best_frame(features)
                 return float(best_frame), next_player, features, cand_features.index.tolist()
 
             if next_type in ["ball_touch", "shot_block"]:
                 features["closest_dist"] = features["next_player_dist"]
-                best_frame, cand_features = ReceptionDetector._find_best_frame(features)
+                best_frame, cand_features = ReceiveDetector._find_best_frame(features)
                 return float(best_frame), next_player, features, cand_features.index.tolist()
 
             else:
@@ -180,23 +180,23 @@ class ReceptionDetector:
                 features["closest_dist"] = np.nanmin(player_dists, axis=1)
                 features["closest_player"] = np.nanargmin(player_dists, axis=1)
 
-                best_frame, cand_features = ReceptionDetector._find_best_frame(features)
+                best_frame, cand_features = ReceiveDetector._find_best_frame(features)
                 receiver = players[features.at[best_frame, "closest_player"]] if best_frame == best_frame else None
-                return float(best_frame), receiver, features, cand_features.index.tolist()
+                return float(best_frame), receiver, features, cand_features
 
     def run(self, s=10) -> None:
         self.events["receiver_id"] = None
         self.events["receive_frame"] = np.nan
 
         for pass_idx in tqdm(self.passes.index, desc="Detecting receiving events"):
-            frame, receiver, _, _ = self._detect_reception(pass_idx, s)
+            frame, receiver, _, _ = self._detect_receive(pass_idx, s)
             self.passes.at[pass_idx, "receiver_id"] = receiver
             self.passes.at[pass_idx, "receive_frame"] = frame
             self.events.at[pass_idx, "receiver_id"] = receiver
             self.events.at[pass_idx, "receive_frame"] = frame
 
     def plot_window_features(self, pass_idx: int, save_path: str = None) -> pd.DataFrame:
-        matched_frame, receiver, features, cand_frames = self._detect_reception(pass_idx)
+        best_frame, receiver, features, cand_features = self._detect_receive(pass_idx)
 
         pass_type = self.events.at[pass_idx, "spadl_type"]
         passer = self.events.at[pass_idx, "player_id"]
@@ -206,11 +206,11 @@ class ReceptionDetector:
         next_player = self.events.at[pass_idx, "next_player_id"]
         print(f"Next event: {next_type} by {next_player}")
 
-        if matched_frame is not None and matched_frame == matched_frame:
-            matched_period = self.frames.at[matched_frame, "period_id"]
-            matched_time = self.frames.at[matched_frame, "timestamp"]
+        if best_frame is not None and best_frame == best_frame:
+            matched_period = self.frames.at[best_frame, "period_id"]
+            matched_time = self.frames.at[best_frame, "timestamp"]
             print(f"\nDetected receiver: {receiver}")
-            print(f"Receiving frame: {matched_frame}")
+            print(f"Receiving frame: {best_frame}")
             print(f"Receiving time: P{matched_period}-{matched_time}")
 
         if isinstance(features, pd.DataFrame) and not features.empty:
@@ -223,15 +223,14 @@ class ReceptionDetector:
 
             ymax = 25
             plt.ylim(0, ymax)
-            if isinstance(cand_frames, List):
-                for frame in cand_frames:
-                    if frame == matched_frame:
-                        plt.vlines(frame, 0, ymax, color="red", linestyles="-")
-                    else:
-                        plt.vlines(frame, 0, ymax, color="black", linestyles="--")
 
-            elif not pd.isna(matched_frame):
-                plt.vlines(matched_frame, 0, ymax, color="red", linestyles="-")
+            if isinstance(cand_features, pd.DataFrame):
+                cand_frames = [t for t in cand_features.index if t != best_frame]
+                plt.vlines(cand_frames, 0, ymax, color="black", linestyles="--", label="cand_frame")
+                plt.vlines(best_frame, 0, ymax, color="red", linestyles="-", label="best_frame")
+
+            elif not pd.isna(best_frame):
+                plt.vlines(best_frame, 0, ymax, color="red", linestyles="-", label="best_frame")
 
             plt.legend(loc="upper right", fontsize=15)
             plt.grid(axis="y")
@@ -241,4 +240,4 @@ class ReceptionDetector:
 
             plt.show()
 
-            return features
+            return cand_features

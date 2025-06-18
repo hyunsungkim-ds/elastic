@@ -9,12 +9,12 @@ import pandas as pd
 from pandera.errors import SchemaError
 from tqdm import tqdm
 
-from sync import config, elastic, reception
+from sync import config, elastic, receive
 from sync.preprocessor import Preprocessor, find_spadl_event_types
 
 if __name__ == "__main__":
-    lineups = pd.read_parquet("data/ajax/lineup/line_up.parquet")
-    events = pd.read_parquet("data/ajax/event/event_new.parquet")
+    lineups = pd.read_parquet(config.LINEUP_PATH)
+    events = pd.read_parquet(config.EVENT_PATH)
     events["utc_timestamp"] = pd.to_datetime(events["utc_timestamp"])
     events = events.sort_values(["stats_perform_match_id", "utc_timestamp"], ignore_index=True)
 
@@ -23,17 +23,17 @@ if __name__ == "__main__":
 
     # Game-by-game event-tracking synchronization
     game_ids = np.sort(events["stats_perform_match_id"].unique())[3:]
-    os.makedirs("data/ajax/event_synced", exist_ok=True)
+    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
 
     erroneous_games = []
 
     # for i, game_file in enumerate(trace_files):
     for i, game_id in enumerate(game_ids):
         # game_id = game_file.split(".")[0]
-        if not os.path.exists(f"data/ajax/tracking/{game_id}.parquet"):
+        if not os.path.exists(f"{config.TRACKING_DIR}/{game_id}.parquet"):
             continue
 
-        traces = pd.read_parquet(f"data/ajax/tracking/{game_id}.parquet")
+        traces = pd.read_parquet(f"{config.TRACKING_DIR}/{game_id}.parquet")
         game_lineup = lineups.loc[lineups["stats_perform_match_id"] == game_id].set_index("player_id")
         game_events = events[
             (events["stats_perform_match_id"] == game_id)
@@ -55,7 +55,7 @@ if __name__ == "__main__":
         input_traces = proc.format_traces_for_syncer()
 
         # Applying ELASTIC to synchronize the event and tracking data
-        result_path = f"data/ajax/event_synced/{game_id}.csv"
+        result_path = f"{config.OUTPUT_DIR}/{game_id}.csv"
         try:
             syncer = elastic.ELASTIC(input_events, input_traces)
             syncer.synchronize()
@@ -87,7 +87,7 @@ if __name__ == "__main__":
         else:
             syncer.events["outcome"] = proc.events["outcome"]
             syncer.events["offside"] = proc.events["offside"]
-            detector = reception.ReceptionDetector(syncer.events, syncer.tracking)
+            detector = receive.ReceiveDetector(syncer.events, syncer.tracking)
             detector.run()
 
             proc.events[config.EVENT_COLS[:4]] = syncer.events[config.EVENT_COLS[:4]]
