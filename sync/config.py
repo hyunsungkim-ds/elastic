@@ -50,7 +50,7 @@ TIME_FAULT_LIKE = 5  # unit: seconds
 EVENT_COLS = [
     "frame",
     "period_id",
-    "seconds",
+    "synced_ts",
     "utc_timestamp",
     "player_id",
     "object_id",

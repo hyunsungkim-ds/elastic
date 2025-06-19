@@ -22,7 +22,7 @@ ELASTIC consists of four stages:
 4. Minor event synchronization (for `take_on`, `tackle`, `foul`, `bad_touch`, and `dispossessed`)
 
 <p align="center">
-  <img src="docs/sync_stages.png" width="60%" />
+  <img src="docs/sync_stages.png" width="500" />
 </p>
 
 Using `ELASTIC.plot_window_features` and `ReceiveDetector.plot_window_features`, you can plot features around a given event to see how candidate frames are extracted and the best frame is selected.
