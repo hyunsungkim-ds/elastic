@@ -1,6 +1,7 @@
 # Data and video files
 animations/
-data*/
+data/
+private/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
