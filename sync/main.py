@@ -58,7 +58,7 @@ if __name__ == "__main__":
         result_path = f"{config.OUTPUT_DIR}/{game_id}.csv"
         try:
             syncer = elastic.ELASTIC(input_events, input_traces)
-            syncer.synchronize()
+            syncer.run()
         except SchemaError:
             if os.path.exists(result_path):
                 os.remove(result_path)

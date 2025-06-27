@@ -28,7 +28,7 @@ class ELASTIC:
         Recording frequency (frames per second) of the tracking data.
     """
 
-    def __init__(self, events: pd.DataFrame, tracking: pd.DataFrame, fps: int = 25) -> None:
+    def __init__(self, events: pd.DataFrame, tracking: pd.DataFrame, args: dict = None) -> None:
         schema.event_schema.validate(events)
         schema.tracking_schema.validate(tracking)
 
@@ -38,7 +38,13 @@ class ELASTIC:
 
         self.events = events.copy()
         self.tracking = tracking
-        self.fps = fps
+
+        if args is None:
+            self.fps = 25
+            self.major_types = config.PASS_LIKE_OPEN + config.INCOMING + config.SET_PIECE + ["tackle"]
+        else:
+            self.fps = args["fps"]
+            self.major_types = args["major_types"]
 
         # Define an episode as a sequence of consecutive in-play frames
         time_cols = ["frame", "period_id", "timestamp", "utc_timestamp"]
@@ -136,7 +142,7 @@ class ELASTIC:
         return player_window.reset_index()["frame"].iloc[best_idx]
 
     def _window_of_frames(
-        self, event: pd.Series, s: int, duel_won=False
+        self, event: pd.Series, s: int, include_opponent=False
     ) -> Tuple[int, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """Identifies the qualifying window of frames around the event's timestamp.
 
@@ -146,6 +152,8 @@ class ELASTIC:
             The record of the event to be matched.
         s: int
             Window length (in seconds).
+        include_opponent: bool
+            The flag indicating whether to return a valid oppo_window.
 
         Returns
         -------
@@ -155,6 +163,8 @@ class ELASTIC:
             All frames of the acting player in the given window.
         ball_window: pd.DataFrame
             All frames containing the ball in the given window.
+        oppo_window (optional): pd.DataFrame or None
+            All frames containing the dueling opponent in the given window
         """
         if event["spadl_type"] in config.SET_PIECE:
             frame_diffs = abs(self.frames["utc_timestamp"] - event["utc_timestamp"])
@@ -202,7 +212,7 @@ class ELASTIC:
         ball_window = ball_window.loc[window_idxs].copy()
 
         prev_player_id = self.events.at[event.name - 1, "player_id"]
-        if duel_won and event["player_id"].split("_")[0] != prev_player_id.split("_")[0]:
+        if include_opponent and event["player_id"].split("_")[0] != prev_player_id.split("_")[0]:
             oppo_window: pd.DataFrame = window[window["player_id"] == prev_player_id].set_index("frame")
             oppo_window = oppo_window.loc[window_idxs].copy()
         else:
@@ -440,7 +450,6 @@ class ELASTIC:
     def _find_matching_frame(
         self,
         matching_func: Callable,
-        event_idx: int,
         event_frame: int,
         player_window: pd.DataFrame,
         ball_window: pd.DataFrame,
@@ -460,7 +469,7 @@ class ELASTIC:
             All frames of the acting player within a certain window.
         ball_window: pd.DataFrame
             All frames of the ball within the same window.
-        oppo_window (optional): pd.DataFrame
+        oppo_window (optional): pd.DataFrame or None
             All frames of the dueling opponent within the same window.
 
         Returns
@@ -474,15 +483,12 @@ class ELASTIC:
         ball_y = ball_window["y"].values
         player_x = player_window["x"].values
         player_y = player_window["y"].values
-        # event_x = self.events.at[event_idx, "start_x"]
-        # event_y = self.events.at[event_idx, "start_y"]
 
         features = pd.DataFrame(index=player_window.index)
         features["frame_delay"] = (features.index.values - event_frame).clip(0)
         features["ball_accel"] = ball_window["accel"].values
         features["ball_height"] = ball_window["z"].values
         features["player_dist"] = np.sqrt((player_x - ball_x) ** 2 + (player_y - ball_y) ** 2)
-        # features["event_dist"] = np.sqrt((event_x - ball_x) ** 2 + (event_y - ball_y) ** 2)
 
         if oppo_window is not None:
             oppo_x = oppo_window["x"].values
@@ -491,7 +497,7 @@ class ELASTIC:
 
         return matching_func(features)
 
-    def _sync_period_events(self, period: int) -> None:
+    def _sync_major_events(self, period: int) -> None:
         """Synchronizes the event and tracking data of a given playing period.
 
         Parameters
@@ -499,14 +505,12 @@ class ELASTIC:
         period: int
             The playing period of which to synchronize the event and tracking data.
         """
-        idxs = self.events[self.events["period_id"] == period].index
+        period_events = self.events[self.events["period_id"] == period].copy()
+        major_events = period_events[period_events["spadl_type"].isin(self.major_types)]
 
-        for i in tqdm(idxs[1:], desc=f"Syncing major events in period {period}"):
+        for i in tqdm(major_events.index[1:], desc=f"Syncing major events in period {period}"):
             event_type = self.events.at[i, "spadl_type"]
-            if event_type in config.PASS_LIKE_OPEN + config.INCOMING + config.SET_PIECE + ["tackle"]:
-                s, matching_func = ELASTIC._find_matching_func(event_type)
-            else:
-                continue
+            s, matching_func = ELASTIC._find_matching_func(event_type)
 
             ret = self._window_of_frames(self.events.loc[i], s, event_type == "tackle")
             player_window = ret[1].loc[self.last_matched_frame :].copy()
@@ -515,54 +519,18 @@ class ELASTIC:
             window_args = (ret[0], player_window, ball_window, oppo_window)
 
             if len(player_window) > 0:
-                best_frame = self._find_matching_frame(matching_func, i, *window_args)[0]
+                best_frame = self._find_matching_frame(matching_func, *window_args)[0]
                 if best_frame == best_frame:
                     self.matched_frames[i] = best_frame
                     self.last_matched_frame = best_frame
 
-    def synchronize(self) -> None:
-        """
-        Applies the ELASTIC synchronization algorithm on the instantiated class.
-        """
-        kickoff_idx = 0
+    def _sync_minor_events(self):
+        minor_types = list(set(config.MINOR) - set(self.major_types))
+        minor_events = self.events[self.events["spadl_type"].isin(minor_types)]
+        self.events.loc[minor_events.index, "frame"] = np.nan
+        self.matched_frames.loc[minor_events.index] = np.nan
 
-        for period in self.events["period_id"].unique():
-            try:  # Find the kickoff event of the period
-                best_frame = self.detect_kickoff(period=period)
-                self.last_matched_frame = best_frame
-                self.matched_frames.loc[kickoff_idx] = best_frame
-
-            except ValueError:  # If there is no candidate frames for the kickoff, then find the second event
-                kickoff_frame = self.frames[self.frames["period_id"] == period].index[0]
-                self.last_matched_frame = kickoff_frame
-                self.matched_frames.loc[kickoff_idx] = kickoff_frame
-
-                kickoff_idx += 1
-                window_args = self._window_of_frames(self.events.loc[kickoff_idx], 5)
-                best_frame = self._find_matching_frame(ELASTIC._detect_pass_like, kickoff_idx, *window_args)[0]
-
-            # Adjust the time bias between events and tracking
-            ts_offset = self.events.at[kickoff_idx, "utc_timestamp"] - self.frames.at[best_frame, "utc_timestamp"]
-            self.events.loc[self.events["period_id"] == period, "utc_timestamp"] -= ts_offset
-            kickoff_idx = len(self.events[self.events["period_id"] == period])
-
-            # Sync events of the playing period
-            self._sync_period_events(period)
-
-        self.events["frame"] = self.matched_frames
-        # self.events["seconds"] = (self.matched_frames / self.fps).round(2)
-
-        # Detect receptions
-        self.receive_det = ReceiveDetector(self.events, self.tracking)
-        self.receive_det.run()
-        self.events = self.receive_det.events
-
-        # Post-synchronize remaining events
-        post_sync_events = self.events[self.events["spadl_type"].isin(config.MINOR)]
-        self.events.loc[post_sync_events.index, "frame"] = np.nan
-        self.matched_frames.loc[post_sync_events.index] = np.nan
-
-        for i in tqdm(post_sync_events.index, desc="Post-syncing remaining events"):
+        for i in tqdm(minor_events.index, desc="Post-syncing minor events"):
             event_type = self.events.at[i, "spadl_type"]
             event_player = self.events.at[i, "player_id"]
             prev_player = self.events.at[i - 1, "player_id"]
@@ -580,10 +548,15 @@ class ELASTIC:
                     continue
 
             if event_type == "dispossessed" and self.events.at[i, "next_type"] == "tackle":
-                next_frame = self.matched_frames[i + 1]
-                if not np.isnan(next_frame):
-                    self.matched_frames[i] = next_frame
+                # First synchronize the following tackle and assign the tackling frame to the dispossessed event
+                if "tackle" in minor_types:
                     continue
+                else:
+                    # The next tackle has been already synchronized in the previous stage
+                    next_frame = self.matched_frames[i + 1]
+                    if not np.isnan(next_frame):
+                        self.matched_frames[i] = next_frame
+                        continue
 
             if event_type == "foul" and self.events.at[i - 1, "spadl_type"] == "foul":
                 prev_frame = self.matched_frames[i - 1]
@@ -599,17 +572,58 @@ class ELASTIC:
             max_frame = np.nanmin([np.nanmin(next_frames), self.frames.index[-1]])
 
             s, matching_func = ELASTIC._find_matching_func(event_type)
-            ret = self._window_of_frames(post_sync_events.loc[i], s)
+            ret = self._window_of_frames(minor_events.loc[i], s, event_type == "tackle")
 
             player_window = ret[1].loc[min_frame:max_frame].copy()
             ball_window = ret[2].loc[min_frame:max_frame].copy()
-            # oppo_window = ret[3].loc[min_frame:max_frame].copy() if ret[3] is not None else None
-            window_args = (ret[0], player_window, ball_window)
+            oppo_window = ret[3].loc[min_frame:max_frame].copy() if ret[3] is not None else None
+            window_args = (ret[0], player_window, ball_window, oppo_window)
 
             if len(player_window) > 0:
-                best_frame = self._find_matching_frame(matching_func, i, *window_args)[0]
-                if best_frame == best_frame:
+                best_frame = self._find_matching_frame(matching_func, *window_args)[0]
+                if not pd.isna(best_frame):
                     self.matched_frames[i] = best_frame
+                    if event_type == "tackle" and self.events.at[i - 1, "spadl_type"] == "dispossessed":
+                        self.matched_frames[i - 1] = best_frame
+
+    def run(self) -> None:
+        """
+        Applies the ELASTIC synchronization algorithm on the instantiated class.
+        """
+        kickoff_idx = 0
+
+        for period in self.events["period_id"].unique():
+            try:  # STEP 1: Kick-off detection for the current period
+                best_frame = self.detect_kickoff(period=period)
+                self.last_matched_frame = best_frame
+                self.matched_frames.loc[kickoff_idx] = best_frame
+
+            except ValueError:  # If there is no candidate frames for the kickoff, then find the second event
+                kickoff_frame = self.frames[self.frames["period_id"] == period].index[0]
+                self.last_matched_frame = kickoff_frame
+                self.matched_frames.loc[kickoff_idx] = kickoff_frame
+
+                kickoff_idx += 1
+                window_args = self._window_of_frames(self.events.loc[kickoff_idx], 5)
+                best_frame = self._find_matching_frame(ELASTIC._detect_pass_like, *window_args)[0]
+
+            # Adjust the time bias between events and tracking
+            ts_offset = self.events.at[kickoff_idx, "utc_timestamp"] - self.frames.at[best_frame, "utc_timestamp"]
+            self.events.loc[self.events["period_id"] == period, "utc_timestamp"] -= ts_offset
+            kickoff_idx = len(self.events[self.events["period_id"] == period])
+
+            # STEP 2: Major event synchronization for the current period
+            self._sync_major_events(period)
+
+        self.events["frame"] = self.matched_frames
+
+        # STEP 3: Receive detection
+        self.receive_det = ReceiveDetector(self.events, self.tracking)
+        self.receive_det.run()
+        self.events = self.receive_det.events
+
+        # STEP 4: Minor event synchronization
+        self._sync_minor_events()
 
         self.events["frame"] = self.matched_frames
         self.events["synced_ts"] = self.events["frame"].map(self.frames["timestamp"].to_dict())
@@ -644,7 +658,7 @@ class ELASTIC:
         oppo_window = oppo_window.loc[min_frame:].copy() if oppo_window is not None else None
         window_args = (event_frame, player_window, ball_window, oppo_window)
 
-        best_frame, features, cand_features = self._find_matching_frame(matching_func, event_idx, *window_args)
+        best_frame, features, cand_features = self._find_matching_frame(matching_func, *window_args)
 
         if not pd.isna(best_frame):
             matched_period = self.frames.at[best_frame, "period_id"]
