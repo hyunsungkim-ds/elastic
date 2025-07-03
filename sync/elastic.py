@@ -142,7 +142,12 @@ class ELASTIC:
         return player_window.reset_index()["frame"].iloc[best_idx]
 
     def _window_of_frames(
-        self, event: pd.Series, s: int, include_opponent=False
+        self,
+        event: pd.Series,
+        s: int,
+        include_opponent: bool = False,
+        min_frame: int = None,
+        max_frame: int = None,
     ) -> Tuple[int, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """Identifies the qualifying window of frames around the event's timestamp.
 
@@ -208,13 +213,13 @@ class ELASTIC:
         ball_window: pd.DataFrame = window[window["ball"]].set_index("frame")
 
         window_idxs = player_window.index.intersection(ball_window.index)
-        player_window = player_window.loc[window_idxs].copy()
-        ball_window = ball_window.loc[window_idxs].copy()
+        player_window = player_window.loc[window_idxs].loc[min_frame:max_frame].copy()
+        ball_window = ball_window.loc[window_idxs].loc[min_frame:max_frame].copy()
 
         prev_player_id = self.events.at[event.name - 1, "player_id"]
         if include_opponent and event["player_id"].split("_")[0] != prev_player_id.split("_")[0]:
             oppo_window: pd.DataFrame = window[window["player_id"] == prev_player_id].set_index("frame")
-            oppo_window = oppo_window.loc[window_idxs].copy()
+            oppo_window = oppo_window.loc[window_idxs].loc[min_frame:max_frame].copy()
         else:
             oppo_window = None
 
@@ -427,7 +432,7 @@ class ELASTIC:
         if event_type in config.PASS_LIKE_OPEN + ["bad_touch"]:
             s = config.TIME_PASS_LIKE_OPEN
             matching_func = ELASTIC._detect_pass_like
-        elif event_type in config.INCOMING + ["take_on"]:
+        elif event_type in config.INCOMING:
             s = config.TIME_INCOMING
             matching_func = ELASTIC._detect_incoming
         elif event_type in config.SET_PIECE:
@@ -511,15 +516,10 @@ class ELASTIC:
         for i in tqdm(major_events.index[1:], desc=f"Syncing major events in period {period}"):
             event_type = self.events.at[i, "spadl_type"]
             s, matching_func = ELASTIC._find_matching_func(event_type)
+            windows = self._window_of_frames(self.events.loc[i], s, event_type == "tackle", self.last_matched_frame)
 
-            ret = self._window_of_frames(self.events.loc[i], s, event_type == "tackle")
-            player_window = ret[1].loc[self.last_matched_frame :].copy()
-            ball_window = ret[2].loc[self.last_matched_frame :].copy()
-            oppo_window = ret[3].loc[self.last_matched_frame :].copy() if ret[3] is not None else None
-            window_args = (ret[0], player_window, ball_window, oppo_window)
-
-            if len(player_window) > 0:
-                best_frame = self._find_matching_frame(matching_func, *window_args)[0]
+            if len(windows[1]) > 0:
+                best_frame = self._find_matching_frame(matching_func, *windows)[0]
                 if best_frame == best_frame:
                     self.matched_frames[i] = best_frame
                     self.last_matched_frame = best_frame
@@ -572,15 +572,10 @@ class ELASTIC:
             max_frame = np.nanmin([np.nanmin(next_frames), self.frames.index[-1]])
 
             s, matching_func = ELASTIC._find_matching_func(event_type)
-            ret = self._window_of_frames(minor_events.loc[i], s, event_type == "tackle")
+            windows = self._window_of_frames(minor_events.loc[i], s, event_type == "tackle", min_frame, max_frame)
 
-            player_window = ret[1].loc[min_frame:max_frame].copy()
-            ball_window = ret[2].loc[min_frame:max_frame].copy()
-            oppo_window = ret[3].loc[min_frame:max_frame].copy() if ret[3] is not None else None
-            window_args = (ret[0], player_window, ball_window, oppo_window)
-
-            if len(player_window) > 0:
-                best_frame = self._find_matching_frame(matching_func, *window_args)[0]
+            if len(windows[1]) > 0:
+                best_frame = self._find_matching_frame(matching_func, *windows)[0]
                 if not pd.isna(best_frame):
                     self.matched_frames[i] = best_frame
                     if event_type == "tackle" and self.events.at[i - 1, "spadl_type"] == "dispossessed":
@@ -604,8 +599,8 @@ class ELASTIC:
                 self.matched_frames.loc[kickoff_idx] = kickoff_frame
 
                 kickoff_idx += 1
-                window_args = self._window_of_frames(self.events.loc[kickoff_idx], 5)
-                best_frame = self._find_matching_frame(ELASTIC._detect_pass_like, *window_args)[0]
+                windows = self._window_of_frames(self.events.loc[kickoff_idx], 5)
+                best_frame = self._find_matching_frame(ELASTIC._detect_pass_like, *windows)[0]
 
             # Adjust the time bias between events and tracking
             ts_offset = self.events.at[kickoff_idx, "utc_timestamp"] - self.frames.at[best_frame, "utc_timestamp"]
@@ -651,14 +646,9 @@ class ELASTIC:
         s, matching_func = ELASTIC._find_matching_func(event_type)
         print(f"Event {event_idx}: {event_type} by {event['player_id']}")
 
-        duel_like = event_type in ["tackle"]
-        event_frame, player_window, ball_window, oppo_window = self._window_of_frames(event, s, duel_like)
-        player_window = player_window.loc[min_frame:].copy()
-        ball_window = ball_window.loc[min_frame:].copy()
-        oppo_window = oppo_window.loc[min_frame:].copy() if oppo_window is not None else None
-        window_args = (event_frame, player_window, ball_window, oppo_window)
-
-        best_frame, features, cand_features = self._find_matching_frame(matching_func, *window_args)
+        duel_like = event_type in ["tackle", "take_on"]
+        windows = self._window_of_frames(event, s, duel_like, min_frame)
+        best_frame, features, cand_features = self._find_matching_frame(matching_func, *windows)
 
         if not pd.isna(best_frame):
             matched_period = self.frames.at[best_frame, "period_id"]
@@ -706,7 +696,7 @@ class ELASTIC:
 
             ymax = 25
             plt.ylim(0, ymax)
-            plt.vlines(event_frame, 0, ymax, color="k", linestyles="-", label="annot_frame")
+            plt.vlines(windows[0], 0, ymax, color="k", linestyles="-", label="annot_frame")
 
             if isinstance(cand_features, pd.DataFrame):
                 cand_frames = [t for t in cand_features.index if t != best_frame]
