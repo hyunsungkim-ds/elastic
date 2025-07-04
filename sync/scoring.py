@@ -48,10 +48,12 @@ def score_frames_etsy(
     return scores
 
 
-ball_accel_func = linear_scoring_func(0, 20, increasing=True)
 event_dist_func = linear_scoring_func(0, 10, increasing=False)
 player_dist_func = linear_scoring_func(0, 3, increasing=False)
-player_dist_func_hard = linear_scoring_func(0, 10, increasing=False)
+player_dist_func_slack = linear_scoring_func(3, 10, increasing=False)
+player_speed_func = linear_scoring_func(0, 7, increasing=True)
+player_accel_func = linear_scoring_func(0, 5, increasing=True)
+ball_accel_func = linear_scoring_func(0, 20, increasing=True)
 kick_dist_func = linear_scoring_func(0, 5, increasing=True)
 frame_delay_func = linear_scoring_func(0, 125, increasing=False)
 
@@ -70,6 +72,14 @@ def score_frames_tackle(features: pd.DataFrame) -> np.ndarray:
     oppo_dist_score = 20 * player_dist_func(features["oppo_dist"].values)
     frame_delay_score = 40 * frame_delay_func(features["frame_delay"].values)
     return ball_accel_score + player_dist_score + oppo_dist_score + frame_delay_score
+
+
+def score_frames_take_on(features: pd.DataFrame) -> np.ndarray:
+    player_accel_score = 25 * player_accel_func(features["player_accel"].values)
+    delta_speed_score = 25 * player_speed_func(features["delta_speed"].values)
+    max_speed_score = 25 * player_speed_func(features["max_speed"].values)
+    oppo_dist_score = 25 * player_dist_func_slack(features["oppo_dist"].values)
+    return player_accel_score + delta_speed_score + max_speed_score + oppo_dist_score
 
 
 def score_frames_dispossessed(features: pd.DataFrame) -> np.ndarray:
