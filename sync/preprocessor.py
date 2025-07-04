@@ -116,15 +116,13 @@ class Preprocessor:
         if "frame" not in self.traces.columns or "utc_timestamp" not in self.traces.columns:
             self.calculate_tracking_utc_timestamps()
 
-        traces = self.traces[self.traces["ball_state"] == "alive"].copy()
-
-        home_players = [c[:-3] for c in traces.columns if fnmatch.fnmatch(c, "home_*_id")]
-        away_players = [c[:-3] for c in traces.columns if fnmatch.fnmatch(c, "away_*_id")]
+        home_players = [c[:-3] for c in self.traces.columns if fnmatch.fnmatch(c, "home_*_id")]
+        away_players = [c[:-3] for c in self.traces.columns if fnmatch.fnmatch(c, "away_*_id")]
         objects = home_players + away_players + ["ball"]
         ret_list = []
 
         for p in objects:
-            object_traces = traces[["frame", "period_id", "timestamp", "utc_timestamp"]].copy()
+            object_traces = self.traces[["frame", "period_id", "timestamp", "utc_timestamp", "ball_state"]].copy()
 
             if p == "ball":
                 object_traces["player_id"] = None
@@ -133,19 +131,23 @@ class Preprocessor:
                 object_traces["player_id"] = p  # traces[f"{p}_id"]
                 object_traces["ball"] = False
 
-            object_traces["x"] = traces[f"{p}_x"].round(2)
-            object_traces["y"] = traces[f"{p}_y"].round(2)
-            object_traces["z"] = traces["ball_z"].round(2) if p == "ball" else np.nan
+            object_traces["x"] = self.traces[f"{p}_x"].values.round(2)
+            object_traces["y"] = self.traces[f"{p}_y"].values.round(2)
+            object_traces["z"] = self.traces["ball_z"].values.round(2) if p == "ball" else np.nan
 
             for i in object_traces["period_id"].unique():
                 period_traces = object_traces[object_traces["period_id"] == i].dropna(subset=["x"]).copy()
                 if not period_traces.empty:
                     vx = savgol_filter(np.diff(period_traces["x"].values) * self.fps, window_length=15, polyorder=2)
                     vy = savgol_filter(np.diff(period_traces["y"].values) * self.fps, window_length=15, polyorder=2)
+                    period_traces.loc[period_traces.index[1:], "speed"] = np.sqrt(vx**2 + vy**2)
+                    period_traces["speed"] = period_traces["speed"].bfill()
+
                     # speed = np.sqrt(vx**2 + vy**2)
                     # accel = savgol_filter(np.diff(speed) * self.fps, window_length=9, polyorder=2)
                     # period_traces.loc[period_traces.index[1:-1], "accel"] = accel
                     # period_traces["accel"] = period_traces["accel"].bfill().ffill()
+
                     ax = savgol_filter(np.diff(vx) * self.fps, window_length=9, polyorder=2)
                     ay = savgol_filter(np.diff(vy) * self.fps, window_length=9, polyorder=2)
                     period_traces.loc[period_traces.index[1:-1], "accel"] = np.sqrt(ax**2 + ay**2)
@@ -153,6 +155,7 @@ class Preprocessor:
                     ret_list.append(period_traces)
 
         ret = pd.concat(ret_list, ignore_index=True)
+        ret = ret[ret["ball_state"] == "alive"].drop("ball_state", axis=1).reset_index(drop=True)
         return ret.astype({"period_id": int, "z": float})
 
 

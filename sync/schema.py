@@ -39,6 +39,7 @@ tracking_schema = DataFrameSchema(
         "x": Column(float),
         "y": Column(float),
         "z": Column(float, Check(lambda s: s >= 0), nullable=True),  # Mandatory for ball (not players)
+        "speed": Column(float),
         "accel": Column(float),
     },
     index=Index(int),
