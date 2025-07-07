@@ -168,6 +168,8 @@ class ELASTIC:
         oppo_window (optional): pd.DataFrame or None
             All frames containing the dueling opponent in the given window
         """
+        player_id = event["player_id"]
+
         if event["spadl_type"] in config.SET_PIECE:
             frame_diffs = abs(self.frames["utc_timestamp"] - event["utc_timestamp"])
 
@@ -207,29 +209,50 @@ class ELASTIC:
         # Select all player and ball frames within window range
         cand_frames = [t for t in cand_frames if t >= min_frame and t <= max_frame]
         window = self.tracking[self.tracking["frame"].isin(cand_frames)].copy()
-        player_window: pd.DataFrame = window[window["player_id"] == event["player_id"]].set_index("frame")
+        player_window: pd.DataFrame = window[window["player_id"] == player_id].set_index("frame")
         ball_window: pd.DataFrame = window[window["ball"]].set_index("frame")
 
         prev_player_id = self.events.at[event.name - 1, "player_id"]
-        if event["spadl_type"] == "tackle" and event["player_id"].split("_")[0] != prev_player_id.split("_")[0]:
+        next_player_id = player_id if pd.isna(event["next_player_id"]) else event["next_player_id"]
+
+        if event["spadl_type"] == "tackle" and prev_player_id[:4] != player_id[:4]:
             oppo_window = window[window["player_id"] == prev_player_id].set_index("frame").copy()
 
         elif event["spadl_type"] == "take_on":
-            opponents = [p for p in window["player_id"].unique() if p is not None and p[:4] != event["player_id"][:4]]
-            oppo_x = window[window["player_id"].isin(opponents)].pivot_table("x", "frame", "player_id", "first")
-            oppo_y = window[window["player_id"].isin(opponents)].pivot_table("y", "frame", "player_id", "first")
+            if not event["outcome"] and next_player_id[:4] != player_id[:4] and event["next_type"] == "tackle":
+                oppo_window = window[window["player_id"] == next_player_id].set_index("frame").copy()
 
-            oppo_dist_x = oppo_x.values - player_window[["x"]].values
-            oppo_dist_y = oppo_y.values - player_window[["y"]].values
-            oppo_dists = np.sqrt(oppo_dist_x**2 + oppo_dist_y**2)
-            closest_opponents = oppo_x.columns[np.nanargmin(oppo_dists, axis=1)]
+            else:
+                # Find the closest player among the opponents closer than the event player to the target goal
+                goal_x = config.FIELD_LENGTH if player_id[:4] == "home" else 0
+                goal_y = config.FIELD_WIDTH / 2
 
-            closest_rows = []
-            for i, frame in enumerate(oppo_x.index):
-                row = window[(window["frame"] == frame) & (window["player_id"] == closest_opponents[i])]
-                if not row.empty:
-                    closest_rows.append(row)
-            oppo_window = pd.concat(closest_rows).set_index("frame")
+                opponents = [p for p in window["player_id"].unique() if p is not None and p[:4] != player_id[:4]]
+                oppo_x = window[window["player_id"].isin(opponents)].pivot_table("x", "frame", "player_id", "first")
+                oppo_y = window[window["player_id"].isin(opponents)].pivot_table("y", "frame", "player_id", "first")
+
+                oppo_dist_x = oppo_x.values - player_window[["x"]].values
+                oppo_dist_y = oppo_y.values - player_window[["y"]].values
+                oppo_dists = np.sqrt(oppo_dist_x**2 + oppo_dist_y**2)
+
+                player_xy = player_window[["x", "y"]].reindex(oppo_x.index)
+                player_goal_dists = np.sqrt((player_xy["x"] - goal_x) ** 2 + (player_xy["y"] - goal_y) ** 2)
+                oppo_goal_dists = np.sqrt((oppo_x - goal_x) ** 2 + (oppo_y - goal_y) ** 2)
+                oppo_mask = oppo_goal_dists.le(player_goal_dists + 1, axis=0)
+
+                oppo_dists_masked = np.where(oppo_mask.values, oppo_dists, config.FIELD_LENGTH)
+                closest_opponents = oppo_x.columns[np.nanargmin(oppo_dists_masked, axis=1)]
+
+                closest_rows = []
+                for i, frame in enumerate(oppo_x.index):
+                    row = window[(window["frame"] == frame) & (window["player_id"] == closest_opponents[i])]
+                    if not row.empty:
+                        closest_rows.append(row)
+
+                if closest_rows:
+                    oppo_window = pd.concat(closest_rows).set_index("frame")
+                else:
+                    oppo_window = None
 
         else:
             oppo_window = None
@@ -337,16 +360,17 @@ class ELASTIC:
     def _detect_tackle(features: pd.DataFrame, fps=25, savgol_wlen=9) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
         if len(features) > savgol_wlen:
             features["player_dist"] = savgol_filter(features["player_dist"], window_length=savgol_wlen, polyorder=2)
+            features["oppo_dist"] = savgol_filter(features["oppo_dist"], window_length=savgol_wlen, polyorder=2)
 
-        features["rel_speed"] = features["player_dist"].diff().shift(-1).ffill() * fps
-        features["rel_accel"] = abs(features["rel_speed"].diff().fillna(0) * fps)
-        if len(features) > savgol_wlen:
-            features["rel_accel"] = savgol_filter(features["rel_accel"], window_length=9, polyorder=2)
+        # features["rel_speed"] = features["player_dist"].diff().shift(-1).ffill() * fps
+        # features["rel_accel"] = abs(features["rel_speed"].diff().fillna(0) * fps)
+        # if len(features) > savgol_wlen:
+        #     features["rel_accel"] = savgol_filter(features["rel_accel"], window_length=9, polyorder=2)
 
-        player_dist_valleys = find_peaks(-features["player_dist"], prominence=1)[0] + 1
+        player_dist_valleys = find_peaks(-features["player_dist"], prominence=0.1)[0] + 1
         candidates = player_dist_valleys.tolist() + [0]
 
-        oppo_dist_valleys = find_peaks(-features["oppo_dist"], prominence=1)[0] + 1
+        oppo_dist_valleys = find_peaks(-features["oppo_dist"], prominence=0.1)[0] + 1
         for i in oppo_dist_valleys:
             if not set(range(i - 3, i + 4)) & set(candidates):
                 candidates.append(i)
@@ -356,7 +380,7 @@ class ELASTIC:
             if not set(range(i - 3, i + 4)) & set(candidates):
                 candidates.append(i)
 
-        accel_peaks = find_peaks(features["rel_accel"], prominence=10, distance=5)[0]
+        accel_peaks = find_peaks(features["ball_accel"], prominence=10, distance=5)[0]
         for i in accel_peaks:
             if not set(range(i - 3, i + 4)) & set(candidates):
                 candidates.append(i)
@@ -368,14 +392,11 @@ class ELASTIC:
             cand_features.at[i, "player_dist"] = features.loc[i - 3 : i + 3, "player_dist"].min()
             cand_features.at[i, "oppo_dist"] = features.loc[i - 3 : i + 3, "oppo_dist"].min()
             cand_features.at[i, "ball_height"] = features.loc[i - 3 : i + 3, "ball_height"].min()
-            cand_features.at[i, "rel_speed"] = features.loc[i - 3 : i + 3, "rel_speed"].max()
-            cand_features.at[i, "ball_accel"] = features.loc[i - 3 : i + 3, "rel_accel"].max()
+            # cand_features.at[i, "rel_speed"] = features.loc[i - 3 : i + 3, "rel_speed"].max()
+            cand_features.at[i, "ball_accel"] = features.loc[i - 3 : i + 3, "ball_accel"].max()
 
         cand_features = cand_features[
-            (cand_features["player_dist"] < 3)
-            & (cand_features["oppo_dist"] < 3)
-            & (cand_features["ball_height"] < 3.5)
-            & (cand_features["rel_speed"] > -1)
+            (cand_features["player_dist"] < 3) & (cand_features["oppo_dist"] < 3) & (cand_features["ball_height"] < 3.5)
         ]
 
         if len(cand_features.index) == 0:
@@ -385,20 +406,28 @@ class ELASTIC:
             return cand_features.index[0], features, None
 
         else:
+            for i, frame in enumerate(cand_features.index):
+                next_frame = cand_features.index[i + 1] if i < len(cand_features) - 1 else frame + 2 * fps
+                post_player_dist = features["player_dist"].loc[frame:next_frame].max()
+                post_oppo_dist = features["oppo_dist"].loc[frame:next_frame].max()
+                cand_features.at[frame, "kick_dist"] = max(post_player_dist, post_oppo_dist)
+
             cand_features["score"] = scoring.score_frames_tackle(cand_features)
             return cand_features["score"].idxmax(), features, cand_features
 
     @staticmethod
-    def _detect_take_on(features: pd.DataFrame, fps=25, *args) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
-        dist_valleys = find_peaks(-features["player_dist"], prominence=1)[0]
-        candidates = dist_valleys.tolist() + [0]
+    def _detect_take_on(
+        features: pd.DataFrame, fps=25, savgol_wlen=9, secondary=False
+    ) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
+        if len(features) > savgol_wlen:
+            features["player_dist"] = savgol_filter(features["player_dist"], window_length=savgol_wlen, polyorder=2)
 
-        height_valleys = find_peaks(-features["ball_height"], prominence=0.5)[0]
-        for i in height_valleys:
-            if not set(range(i - 3, i + 4)) & set(candidates):
-                candidates.append(i)
+        dist_valleys = find_peaks(-features["player_dist"], prominence=0.1)[0]
+        candidates = dist_valleys.tolist() + [len(features) - 1]
+        if not secondary:
+            candidates.append(0)
 
-        accel_peaks = find_peaks(features["player_accel"], prominence=3)[0]
+        accel_peaks = find_peaks(features["ball_accel"], prominence=10)[0]
         for i in accel_peaks:
             if not set(range(i - 3, i + 4)) & set(candidates):
                 candidates.append(i)
@@ -408,10 +437,9 @@ class ELASTIC:
 
         for i in cand_features.index:
             cand_features.at[i, "player_dist"] = features.loc[i - 3 : i + 3, "player_dist"].min()
+            cand_features.at[i, "player_accel"] = features.loc[i : i + 5, "player_accel"].max()
             cand_features.at[i, "ball_height"] = features.loc[i - 3 : i + 3, "ball_height"].min()
-            cand_features.at[i, "player_accel"] = features.loc[i - 3 : i + 3, "player_accel"].max()
             cand_features.at[i, "ball_accel"] = features.loc[i - 3 : i + 3, "ball_accel"].max()
-            cand_features.at[i, "oppo_dist"] = features.loc[i - 10 : i + 10, "oppo_dist"].min()
 
         cand_features = cand_features[(cand_features["player_dist"] < 1) & (cand_features["ball_height"] < 2)]
 
@@ -423,22 +451,41 @@ class ELASTIC:
 
         else:
             for i, frame in enumerate(cand_features.index):
-                next_frame = cand_features.index[i + 1] if i < len(cand_features) - 1 else frame + fps
+                next_frame = frame + int(0.5 * fps)
                 cand_features.at[frame, "max_speed"] = features["player_speed"].loc[frame:next_frame].max()
+
+                cur_oppo_id = features.at[frame, "oppo_id"]
+                same_oppo_features = features[features["oppo_id"] == cur_oppo_id].copy()
+                before_frame = same_oppo_features.loc[frame - int(0.2 * fps) :].index[0]
+                after_frame = same_oppo_features.loc[: frame + fps].index[-1]
+
+                vec1 = same_oppo_features.loc[before_frame, ["oppo_rel_x", "oppo_rel_y"]].values
+                vec2 = same_oppo_features.loc[after_frame, ["oppo_rel_x", "oppo_rel_y"]].values
+                norm1 = np.linalg.norm(vec1)
+                norm2 = np.linalg.norm(vec2)
+
+                if norm1 > 0 and norm2 > 0:
+                    cand_features.at[frame, "angle_change"] = np.dot(vec1, vec2) / (norm1 * norm2)
+                else:
+                    cand_features.at[frame, "angle_change"] = 0
 
             cand_features["delta_speed"] = cand_features["max_speed"] - cand_features["player_speed"]
             cand_features["score"] = scoring.score_frames_take_on(cand_features)
             return cand_features["score"].idxmax(), features, cand_features
 
     @staticmethod
-    def _detect_dispossessed(features: pd.DataFrame, fps=25) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
-        dist_valleys = find_peaks(-features["player_dist"], prominence=1)[0]
-        candidates = dist_valleys.tolist() + [0]
+    def _detect_second_take_on(
+        features: pd.DataFrame, fps=25, savgol_wlen=9
+    ) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
+        return ELASTIC._detect_take_on(features, fps, savgol_wlen, secondary=True)
 
-        height_valleys = find_peaks(-features["ball_height"], prominence=0.5)[0]
-        for i in height_valleys:
-            if not set(range(i - 3, i + 4)) & set(candidates):
-                candidates.append(i)
+    @staticmethod
+    def _detect_dispossessed(features: pd.DataFrame, fps=25, savgol_wlen=9) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
+        if len(features) > savgol_wlen:
+            features["player_dist"] = savgol_filter(features["player_dist"], window_length=savgol_wlen, polyorder=2)
+
+        dist_valleys = find_peaks(-features["player_dist"], prominence=0.1)[0]
+        candidates = dist_valleys.tolist() + [0, len(features) - 1]
 
         accel_peaks = find_peaks(features["ball_accel"], prominence=10)[0]
         for i in accel_peaks:
@@ -463,7 +510,7 @@ class ELASTIC:
 
         else:
             for i, frame in enumerate(cand_features.index):
-                next_frame = cand_features.index[i + 1] if i < len(cand_features) - 1 else features.index[-1]
+                next_frame = cand_features.index[i + 1] if i < len(cand_features) - 1 else frame + 2 * fps
                 cand_features.at[frame, "kick_dist"] = features["player_dist"].loc[frame:next_frame].max()
 
             cand_features["score"] = scoring.score_frames_dispossessed(cand_features)
@@ -502,6 +549,9 @@ class ELASTIC:
         elif event_type == "take_on":
             s = config.TIME_PASS_LIKE_OPEN
             matching_func = ELASTIC._detect_take_on
+        elif event_type == "second_take_on":
+            s = config.TIME_PASS_LIKE_OPEN
+            matching_func = ELASTIC._detect_second_take_on
         elif event_type == "dispossessed":
             s = config.TIME_PASS_LIKE_OPEN
             matching_func = ELASTIC._detect_dispossessed
@@ -561,7 +611,10 @@ class ELASTIC:
         if oppo_window is not None:
             oppo_x = oppo_window["x"].values
             oppo_y = oppo_window["y"].values
-            features["oppo_dist"] = np.sqrt((oppo_x - ball_x) ** 2 + (oppo_y - ball_y) ** 2)
+            features["oppo_id"] = oppo_window["player_id"].values
+            features["oppo_rel_x"] = player_x - oppo_x
+            features["oppo_rel_y"] = player_y - oppo_y
+            features["oppo_dist"] = np.sqrt(features["oppo_rel_x"] ** 2 + features["oppo_rel_y"] ** 2)
 
         return matching_func(features, fps=self.fps)
 
@@ -621,8 +674,11 @@ class ELASTIC:
                     self.matched_frames[i] = prev_frame
                     continue
 
-            prev_frames = self.matched_frames[: i - 1].values
-            prev_receive_frames = self.events.loc[: i - 1, "receive_frame"].values
+            if self.events.at[i - 1, "spadl_type"] == "take_on" and event_type == "take_on":
+                event_type = "second_take_on"
+
+            prev_frames = self.matched_frames.loc[: i - 1].values
+            prev_receive_frames = self.events.loc[: i - 1, "receive_frame"].values - int(0.2 * self.fps)
             min_frame = np.nanmax([np.nanmax(prev_frames), np.nanmax(prev_receive_frames), 0])
 
             next_frames = self.matched_frames[i:].values
@@ -645,6 +701,10 @@ class ELASTIC:
         kickoff_idx = 0
 
         for period in self.events["period_id"].unique():
+            period_events: pd.DataFrame = self.events[self.events["period_id"] == period]
+            self.events.loc[period_events.index, "next_player_id"] = period_events.shift(-1)["player_id"]
+            self.events.loc[period_events.index, "next_type"] = period_events.shift(-1)["spadl_type"]
+
             try:  # STEP 1: Kick-off detection for the current period
                 best_frame = self.detect_kickoff(period=period)
                 self.last_matched_frame = best_frame
@@ -661,7 +721,7 @@ class ELASTIC:
 
             # Adjust the time bias between events and tracking
             ts_offset = self.events.at[kickoff_idx, "utc_timestamp"] - self.frames.at[best_frame, "utc_timestamp"]
-            self.events.loc[self.events["period_id"] == period, "utc_timestamp"] -= ts_offset
+            self.events.loc[period_events.index, "utc_timestamp"] -= ts_offset
             kickoff_idx = len(self.events[self.events["period_id"] == period])
 
             # STEP 2: Major event synchronization for the current period
@@ -695,15 +755,25 @@ class ELASTIC:
         features: pd.DataFrame
             Features for each frame in the window that is used for matching.
         """
-        prev_frames = self.matched_frames.loc[: event_idx - 1].values
-        min_frame = np.nanmax([np.nanmax(prev_frames), 0])
-
         event = self.events.loc[event_idx]
         event_type = event["spadl_type"]
+
+        if self.events.at[event_idx - 1, "spadl_type"] == "take_on" and event_type == "take_on":
+            event_type = "second_take_on"
+
         s, matching_func = ELASTIC._find_matching_func(event_type)
         print(f"Event {event_idx}: {event_type} by {event['player_id']}")
 
-        windows = self._window_of_frames(event, s, min_frame)
+        prev_frames = self.matched_frames.loc[: event_idx - 1].values
+        min_frame = np.nanmax([np.nanmax(prev_frames), 0])
+
+        if event_type in config.MINOR:
+            next_frames = self.matched_frames.loc[event_idx + 1 :].values
+            max_frame = np.nanmin([np.nanmin(next_frames), np.inf])
+            windows = self._window_of_frames(event, s, min_frame, max_frame)
+        else:
+            windows = self._window_of_frames(event, s, min_frame)
+
         best_frame, features, cand_features = self._find_matching_frame(matching_func, *windows)
 
         if not pd.isna(best_frame):
@@ -745,13 +815,13 @@ class ELASTIC:
             plt.rcParams.update({"font.size": 18})
             plt.figure(figsize=(8, 6))
 
-            colors = {"player_dist": "tab:blue"}
-            if event_type == "take_on":
-                colors.update({"player_speed": "tab:purple", "player_accel": "tab:orange", "oppo_dist": "tab:green"})
+            colors = {"ball_accel": "tab:orange", "player_dist": "tab:blue"}
+            if event_type.endswith("take_on"):
+                colors.update({"player_speed": "tab:purple", "oppo_dist": "tab:green"})
             elif event_type == "tackle":
-                colors.update({"ball_accel": "tab:orange", "oppo_dist": "tab:green"})
+                colors.update({"oppo_dist": "tab:green"})
             else:
-                colors.update({"ball_accel": "tab:orange", "frame_delay": "tab:green"})
+                colors.update({"frame_delay": "tab:green"})
 
             for feat, color in colors.items():
                 plt.plot(features[feat], label=feat, c=color)
@@ -780,4 +850,4 @@ class ELASTIC:
 
             plt.show()
 
-        return cand_features.drop("player_speed", axis=1)
+        return cand_features

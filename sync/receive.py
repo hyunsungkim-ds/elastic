@@ -25,13 +25,7 @@ class ReceiveDetector:
 
         self.events = events.copy()
 
-        for i in self.events["period_id"].unique():
-            period_events: pd.DataFrame = self.events[self.events["period_id"] == i]
-            self.events.loc[period_events.index, "next_player_id"] = period_events.shift(-1)["player_id"]
-            self.events.loc[period_events.index, "next_type"] = period_events.shift(-1)["spadl_type"]
-
         pass_like = config.PASS_LIKE_OPEN + config.SET_PIECE + ["interception"]
-        # pass_like = ["pass", "cross", "freekick_crossed", "freekick_short"] + config.SET_PIECE_OOP
         self.passes = self.events[self.events["spadl_type"].isin(pass_like) & self.events["frame"].notna()].copy()
 
         self.tracking = tracking
