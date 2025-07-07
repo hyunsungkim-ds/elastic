@@ -8,6 +8,12 @@ import pandas as pd
 from sync.config import FIELD_LENGTH, FIELD_WIDTH
 
 
+def format_timestamp(total_seconds: float) -> str:
+    minutes = int(total_seconds // 60)
+    seconds = total_seconds % 60
+    return f"{minutes:02d}:{int(seconds):02d}{f'{seconds % 1:.2f}'[1:]}"
+
+
 def linear_scoring_func(min_input: float, max_input: float, increasing=False) -> Callable:
     assert min_input < max_input
 

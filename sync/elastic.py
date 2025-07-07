@@ -11,7 +11,7 @@ import pandas as pd
 from scipy.signal import find_peaks, savgol_filter
 from tqdm import tqdm
 
-from sync import config, schema, scoring
+from sync import config, schema, utils
 from sync.receive import ReceiveDetector
 
 
@@ -49,7 +49,7 @@ class ELASTIC:
         # Define an episode as a sequence of consecutive in-play frames
         time_cols = ["frame", "period_id", "timestamp", "utc_timestamp"]
         self.frames = self.tracking[time_cols].drop_duplicates().sort_values("frame").set_index("frame")
-        self.frames["timestamp"] = self.frames["timestamp"].apply(ELASTIC._format_timestamp)
+        self.frames["timestamp"] = self.frames["timestamp"].apply(utils.format_timestamp)
         self.frames["episode_id"] = 0
         n_prev_episodes = 0
 
@@ -63,12 +63,6 @@ class ELASTIC:
         self.last_matched_frame = 0
         self.matched_frames = pd.Series(np.nan, index=self.events.index)
         self.receive_det = None
-
-    @staticmethod
-    def _format_timestamp(total_seconds: float) -> str:
-        minutes = int(total_seconds // 60)
-        seconds = total_seconds % 60
-        return f"{minutes:02d}:{int(seconds):02d}{f'{seconds % 1:.2f}'[1:]}"
 
     def detect_kickoff(self, period: int, buffer_seconds=5) -> int:
         """Searches for the kickoff frame in a given playing period.
@@ -301,7 +295,7 @@ class ELASTIC:
                 next_frame = cand_features.index[i + 1] if i < len(cand_features) - 1 else features.index[-1]
                 cand_features.at[frame, "kick_dist"] = features["player_dist"].loc[frame:next_frame].max()
 
-            cand_features["score"] = scoring.score_frames_elastic(cand_features)
+            cand_features["score"] = utils.score_frames_elastic(cand_features)
             return cand_features["score"].idxmax(), features, cand_features
 
     @staticmethod
@@ -353,7 +347,7 @@ class ELASTIC:
                 prev_frame = cand_features.index[i - 1] if i > 0 else features.index[0]
                 cand_features.at[frame, "kick_dist"] = features["player_dist"].loc[prev_frame:frame].max()
 
-            cand_features["score"] = scoring.score_frames_elastic(cand_features)
+            cand_features["score"] = utils.score_frames_elastic(cand_features)
             return cand_features["score"].idxmax(), features, cand_features
 
     @staticmethod
@@ -412,7 +406,7 @@ class ELASTIC:
                 post_oppo_dist = features["oppo_dist"].loc[frame:next_frame].max()
                 cand_features.at[frame, "kick_dist"] = max(post_player_dist, post_oppo_dist)
 
-            cand_features["score"] = scoring.score_frames_tackle(cand_features)
+            cand_features["score"] = utils.score_frames_tackle(cand_features)
             return cand_features["score"].idxmax(), features, cand_features
 
     @staticmethod
@@ -470,7 +464,7 @@ class ELASTIC:
                     cand_features.at[frame, "angle_change"] = 0
 
             cand_features["delta_speed"] = cand_features["max_speed"] - cand_features["player_speed"]
-            cand_features["score"] = scoring.score_frames_take_on(cand_features)
+            cand_features["score"] = utils.score_frames_take_on(cand_features)
             return cand_features["score"].idxmax(), features, cand_features
 
     @staticmethod
@@ -513,7 +507,7 @@ class ELASTIC:
                 next_frame = cand_features.index[i + 1] if i < len(cand_features) - 1 else frame + 2 * fps
                 cand_features.at[frame, "kick_dist"] = features["player_dist"].loc[frame:next_frame].max()
 
-            cand_features["score"] = scoring.score_frames_dispossessed(cand_features)
+            cand_features["score"] = utils.score_frames_dispossessed(cand_features)
             return cand_features["score"].idxmax(), features, cand_features
 
     @staticmethod
@@ -767,10 +761,11 @@ class ELASTIC:
         prev_frames = self.matched_frames.loc[: event_idx - 1].values
         min_frame = np.nanmax([np.nanmax(prev_frames), 0])
 
-        if event_type in config.MINOR:
+        if event_type in config.MINOR and event["next_type"] not in config.MINOR:
             next_frames = self.matched_frames.loc[event_idx + 1 :].values
             max_frame = np.nanmin([np.nanmin(next_frames), np.inf])
             windows = self._window_of_frames(event, s, min_frame, max_frame)
+            windows = self._window_of_frames(event, s, min_frame)
         else:
             windows = self._window_of_frames(event, s, min_frame)
 

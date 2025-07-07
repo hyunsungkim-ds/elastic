@@ -11,7 +11,7 @@ import pandas as pd
 from scipy.signal import find_peaks
 from tqdm import tqdm
 
-from sync import config, schema, scoring
+from sync import config, schema, utils
 
 
 class ReceiveDetector:
@@ -36,6 +36,7 @@ class ReceiveDetector:
         # Define an episode as a sequence of consecutive in-play frames
         time_cols = ["frame", "period_id", "timestamp", "utc_timestamp"]
         self.frames = self.tracking[time_cols].drop_duplicates().sort_values("frame").set_index("frame")
+        self.frames["timestamp"] = self.frames["timestamp"].apply(utils.format_timestamp)
         self.frames["episode_id"] = 0
         n_prev_episodes = 0
 
@@ -85,7 +86,7 @@ class ReceiveDetector:
                 next_player_last_dist = features["next_player_dist"].at[frame]
                 cand_features.at[frame, "kick_dist"] = next_player_max_dist - next_player_last_dist
 
-            cand_features["score"] = scoring.score_frames_receive(cand_features)
+            cand_features["score"] = utils.score_frames_receive(cand_features)
             # display(cand_features)
             return cand_features["score"].idxmax(), cand_features
 
@@ -171,11 +172,11 @@ class ReceiveDetector:
                 player_dist_y = player_y[players].values - ball_window[["y"]].values
                 player_dists = np.sqrt(player_dist_x**2 + player_dist_y**2)
 
+                features["closest_id"] = np.array(players)[np.nanargmin(player_dists, axis=1)]
                 features["closest_dist"] = np.nanmin(player_dists, axis=1)
-                features["closest_player"] = np.nanargmin(player_dists, axis=1)
 
                 best_frame, cand_features = ReceiveDetector._find_best_frame(features)
-                receiver = players[features.at[best_frame, "closest_player"]] if best_frame == best_frame else None
+                receiver = features.at[best_frame, "closest_id"] if best_frame == best_frame else None
                 return float(best_frame), receiver, features, cand_features
 
     def run(self, s=10) -> None:
