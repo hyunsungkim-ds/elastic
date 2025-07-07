@@ -136,7 +136,7 @@ class ELASTIC:
         return player_window.reset_index()["frame"].iloc[best_idx]
 
     def _window_of_frames(
-        self, event: pd.Series, s: int, min_frame: int = 0, max_frame: int = np.inf
+        self, event: pd.Series, s: int = 5, min_frame: int = 0, max_frame: int = np.inf
     ) -> Tuple[int, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """Identifies the qualifying window of frames around the event's timestamp.
 
@@ -209,11 +209,19 @@ class ELASTIC:
         prev_player_id = self.events.at[event.name - 1, "player_id"]
         next_player_id = player_id if pd.isna(event["next_player_id"]) else event["next_player_id"]
 
-        if event["spadl_type"] == "tackle" and prev_player_id[:4] != player_id[:4]:
-            oppo_window = window[window["player_id"] == prev_player_id].set_index("frame").copy()
+        if not player_window.empty and event["spadl_type"] == "tackle" and prev_player_id[:4] != player_id[:4]:
+            if prev_player_id in window["player_id"].unique():
+                oppo_window = window[window["player_id"] == prev_player_id].set_index("frame").copy()
+            else:
+                oppo_window = None
 
-        elif event["spadl_type"] == "take_on":
-            if not event["outcome"] and next_player_id[:4] != player_id[:4] and event["next_type"] == "tackle":
+        elif not player_window.empty and event["spadl_type"] == "take_on":
+            if (
+                not event["outcome"]
+                and event["next_type"] == "tackle"
+                and next_player_id[:4] != player_id[:4]
+                and next_player_id in window["player_id"].unique()
+            ):
                 oppo_window = window[window["player_id"] == next_player_id].set_index("frame").copy()
 
             else:
@@ -352,6 +360,9 @@ class ELASTIC:
 
     @staticmethod
     def _detect_tackle(features: pd.DataFrame, fps=25, savgol_wlen=9) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
+        if "oppo_id" not in features.columns:
+            return np.nan, features, None
+
         if len(features) > savgol_wlen:
             features["player_dist"] = savgol_filter(features["player_dist"], window_length=savgol_wlen, polyorder=2)
             features["oppo_dist"] = savgol_filter(features["oppo_dist"], window_length=savgol_wlen, polyorder=2)
@@ -413,6 +424,9 @@ class ELASTIC:
     def _detect_take_on(
         features: pd.DataFrame, fps=25, savgol_wlen=9, secondary=False
     ) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
+        if "oppo_id" not in features.columns:
+            return np.nan, features, None
+
         if len(features) > savgol_wlen:
             features["player_dist"] = savgol_filter(features["player_dist"], window_length=savgol_wlen, polyorder=2)
 
@@ -676,7 +690,10 @@ class ELASTIC:
             min_frame = np.nanmax([np.nanmax(prev_frames), np.nanmax(prev_receive_frames), 0])
 
             next_frames = self.matched_frames[i:].values
-            max_frame = np.nanmin([np.nanmin(next_frames), self.frames.index[-1]])
+            if np.all(np.isnan(next_frames)):
+                max_frame = np.inf
+            else:
+                max_frame = np.nanmin([np.nanmin(next_frames), self.frames.index[-1]])
 
             s, matching_func = ELASTIC._find_matching_func(event_type)
             windows = self._window_of_frames(minor_events.loc[i], s, min_frame, max_frame)
