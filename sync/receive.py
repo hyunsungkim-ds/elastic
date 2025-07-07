@@ -51,19 +51,12 @@ class ReceiveDetector:
         dist_valleys = find_peaks(-features["closest_dist"], prominence=0.5)[0]
         cand_idxs = [0] + dist_valleys.tolist() + [len(features) - 1]
 
-        height_valleys = find_peaks(-features["ball_height"], prominence=0.5)[0]
-        for i in height_valleys:
-            if not set(range(i - 3, i + 4)) & set(cand_idxs):
-                cand_idxs.append(i)
-
         accel_peaks = find_peaks(features["ball_accel"], prominence=10, distance=10)[0]
         for i in accel_peaks:
             if not set(range(i - 3, i + 4)) & set(cand_idxs):
                 cand_idxs.append(i)
 
-        # cand_idxs = [i for i in cand_idxs if i < len(features) - 9] + [len(features) - 1]
-        cand_idxs = np.sort(np.unique(cand_idxs))
-        cand_features = features.iloc[cand_idxs].copy()
+        cand_features = features.iloc[np.sort(np.unique(cand_idxs))].copy()
 
         for i in cand_features.index:
             cand_features.at[i, "closest_dist"] = features.loc[i - 3 : i + 3, "closest_dist"].min()
@@ -71,7 +64,7 @@ class ReceiveDetector:
             cand_features.at[i, "ball_accel"] = features.loc[i - 3 : i + 3, "ball_accel"].max()
             cand_features.at[i, "ball_height"] = features.loc[i - 3 : i + 3, "ball_height"].min()
 
-        cand_features = cand_features[(cand_features["closest_dist"] < 3) & (cand_features["ball_height"] < 3)]
+        cand_features = cand_features[(cand_features["closest_dist"] < 2) & (cand_features["ball_height"] < 3)]
 
         if len(cand_features.index) == 0:
             return np.nan, cand_features
@@ -87,7 +80,6 @@ class ReceiveDetector:
                 cand_features.at[frame, "kick_dist"] = next_player_max_dist - next_player_last_dist
 
             cand_features["score"] = utils.score_frames_receive(cand_features)
-            # display(cand_features)
             return cand_features["score"].idxmax(), cand_features
 
     def _detect_receive(self, event_idx: int, s: float = 10) -> Tuple[float, str, pd.DataFrame, pd.DataFrame]:
