@@ -541,16 +541,16 @@ class ELASTIC:
             s = config.TIME_INCOMING
             matching_func = ELASTIC._detect_tackle
         elif event_type == "take_on":
-            s = config.TIME_PASS_LIKE_OPEN
+            s = config.TIME_MINOR
             matching_func = ELASTIC._detect_take_on
         elif event_type == "second_take_on":
-            s = config.TIME_PASS_LIKE_OPEN
+            s = config.TIME_MINOR
             matching_func = ELASTIC._detect_second_take_on
         elif event_type == "dispossessed":
-            s = config.TIME_PASS_LIKE_OPEN
+            s = config.TIME_MINOR
             matching_func = ELASTIC._detect_dispossessed
         elif event_type == "foul":
-            s = config.TIME_FAULT_LIKE
+            s = config.TIME_MINOR
             matching_func = ELASTIC._detect_foul
         else:
             s = 0

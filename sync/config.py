@@ -44,8 +44,7 @@ MINOR = ["take_on", "second_take_on", "foul", "bad_touch", "dispossessed"]
 TIME_PASS_LIKE_OPEN = 5  # unit: seconds
 TIME_INCOMING = 5  # unit: seconds
 TIME_SET_PIECE = 15  # unit: seconds, 10 in the ETSY paper
-TIME_BAD_TOUCH = 5  # unit: seconds
-TIME_FAULT_LIKE = 5  # unit: seconds
+TIME_MINOR = 5  # unit: seconds
 
 EVENT_COLS = [
     "frame",
@@ -61,4 +60,4 @@ EVENT_COLS = [
     "offside",
     "expected_goal",
 ]
-NEXT_EVENT_COLS = ["next_player_id", "next_type", "receiver_id", "receive_frame"]
+NEXT_EVENT_COLS = ["next_player_id", "next_type", "receiver_id", "receive_frame", "receive_ts"]

@@ -7,9 +7,8 @@ if not os.getcwd() in sys.path:
 import numpy as np
 import pandas as pd
 from pandera.errors import SchemaError
-from tqdm import tqdm
 
-from sync import config, elastic, receive
+from sync import config, elastic
 from sync.preprocessor import Preprocessor, find_spadl_event_types
 
 if __name__ == "__main__":
@@ -27,9 +26,7 @@ if __name__ == "__main__":
 
     erroneous_games = []
 
-    # for i, game_file in enumerate(trace_files):
     for i, game_id in enumerate(game_ids):
-        # game_id = game_file.split(".")[0]
         if not os.path.exists(f"{config.TRACKING_DIR}/{game_id}.parquet"):
             continue
 
@@ -55,47 +52,37 @@ if __name__ == "__main__":
         input_traces = proc.format_traces_for_syncer()
 
         # Applying ELASTIC to synchronize the event and tracking data
-        result_path = f"{config.OUTPUT_DIR}/{game_id}.csv"
+        output_path = f"{config.OUTPUT_DIR}/{game_id}.csv"
         try:
             syncer = elastic.ELASTIC(input_events, input_traces)
             syncer.run()
         except SchemaError:
-            if os.path.exists(result_path):
-                os.remove(result_path)
+            if os.path.exists(output_path):
+                os.remove(output_path)
             erroneous_games.append(f"[{i}] {game_id}")
             print("Synchronization for this game was skipped due to potential errors.")
             continue
 
-        proc.events[["frame", "timestamp", "utc_timestamp"]] = syncer.events[["frame", "seconds", "utc_timestamp"]]
-        types_to_sync = config.PASS_LIKE_OPEN + config.SET_PIECE + config.INCOMING + ["tackle"]
-        target_events = proc.events[proc.events["spadl_type"].isin(types_to_sync)]
-        synced_events = proc.events[proc.events["frame"].notna()]
-        print(f"{len(synced_events)} events out of {len(target_events)} are synced.")
+        proc.events[config.EVENT_COLS[:4]] = syncer.events[config.EVENT_COLS[:4]]
+        proc.events[config.NEXT_EVENT_COLS] = syncer.events[config.NEXT_EVENT_COLS]
+        output_events = proc.events[config.EVENT_COLS + config.NEXT_EVENT_COLS]
 
+        synced_events = proc.events[proc.events["frame"].notna()]
         last_synced_event = synced_events.iloc[-1]
         last_synced_episode = syncer.frames.at[last_synced_event["frame"], "episode_id"]
 
         if last_synced_episode >= syncer.frames["episode_id"].max() - 1:
-            target_events = target_events.loc[: last_synced_event.name]
+            output_events = output_events.loc[: last_synced_event.name]
 
-        if len(target_events) - len(synced_events) > 40:
-            if os.path.exists(result_path):
-                os.remove(result_path)
+        print(f"{len(synced_events)} events out of {len(output_events)} are synced.")
+
+        if len(output_events) - len(synced_events) > 50:
+            if os.path.exists(output_path):
+                os.remove(output_path)
             erroneous_games.append(f"[{i}] {game_id}: {game_name} on {game_date}")
             print("The synced data file was not saved due to potential errors.")
-
         else:
-            syncer.events["outcome"] = proc.events["outcome"]
-            syncer.events["offside"] = proc.events["offside"]
-            detector = receive.ReceiveDetector(syncer.events, syncer.tracking)
-            detector.run()
-
-            proc.events[config.EVENT_COLS[:4]] = syncer.events[config.EVENT_COLS[:4]]
-            proc.events[config.NEXT_EVENT_COLS] = None
-            proc.events.loc[detector.events.index, config.NEXT_EVENT_COLS] = detector.events[config.NEXT_EVENT_COLS]
-
-            result_events = proc.events[config.EVENT_COLS + config.NEXT_EVENT_COLS]
-            result_events.to_csv(result_path, index=False, encoding="utf-8")
+            output_events.to_csv(output_path, index=False, encoding="utf-8")
 
     if erroneous_games:
         print("\nWarning: The following games were not saved due to potential errors:")
