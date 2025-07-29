@@ -15,6 +15,7 @@ SPADL_TYPES = [
     "corner_crossed",
     "corner_short",
     "take_on",
+    "second_take_on",
     "foul",
     "tackle",
     "interception",
@@ -39,7 +40,7 @@ PASS_LIKE_OPEN = ["pass", "cross", "shot", "clearance", "keeper_punch", "shot_bl
 SET_PIECE_OOP = ["throw_in", "goalkick", "corner_short", "corner_crossed"]
 SET_PIECE = SET_PIECE_OOP + ["freekick_short", "freekick_crossed", "shot_freekick", "shot_penalty"]
 INCOMING = ["interception", "keeper_save", "keeper_claim", "keeper_pick_up", "keeper_sweeper", "ball_recovery"]
-MINOR = ["take_on", "second_take_on", "foul", "bad_touch", "dispossessed"]
+MINOR = ["tackle", "take_on", "second_take_on", "foul", "bad_touch", "dispossessed"]
 
 TIME_PASS_LIKE_OPEN = 5  # unit: seconds
 TIME_INCOMING = 5  # unit: seconds

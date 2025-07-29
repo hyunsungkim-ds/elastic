@@ -25,7 +25,7 @@ class ReceiveDetector:
 
         self.events = events.copy()
 
-        pass_like = config.PASS_LIKE_OPEN + config.SET_PIECE + ["interception"]
+        pass_like = config.PASS_LIKE_OPEN + config.SET_PIECE  # + ["interception"]
         self.passes = self.events[self.events["spadl_type"].isin(pass_like) & self.events["frame"].notna()].copy()
 
         self.tracking = tracking
@@ -96,7 +96,7 @@ class ReceiveDetector:
         next_type = self.events.at[event_idx, "next_type"]
         next_event_frame = self.events.loc[event_idx + 1 :, "frame"].dropna().min()
 
-        if next_event_frame == next_event_frame:
+        if not pd.isna(next_event_frame):
             max_frame = min(max_frame, next_event_frame)
 
         if next_type is None:
@@ -111,7 +111,7 @@ class ReceiveDetector:
             # Scoring a goal
             return episode_last_frame, "goal", None, None
 
-        elif next_type in config.INCOMING + ["shot_block", "keeper_punch"]:
+        elif next_type in config.INCOMING + ["shot_block", "keeper_punch"] and not pd.isna(next_event_frame):
             # The next event is already a receive event
             return next_event_frame, self.events.at[event_idx, "next_player_id"], None, None
 

@@ -41,10 +41,12 @@ class ELASTIC:
 
         if args is None:
             self.fps = 25
-            self.major_types = config.PASS_LIKE_OPEN + config.INCOMING + config.SET_PIECE + ["tackle"]
+            self.post_sync_types = config.MINOR
         else:
             self.fps = args["fps"]
-            self.major_types = args["major_types"]
+            self.post_sync_types = args["post_sync_types"]
+
+        self.pre_sync_types = list(set(config.SPADL_TYPES) - set(self.post_sync_types))
 
         # Define an episode as a sequence of consecutive in-play frames
         time_cols = ["frame", "period_id", "timestamp", "utc_timestamp"]
@@ -303,7 +305,7 @@ class ELASTIC:
                 next_frame = cand_features.index[i + 1] if i < len(cand_features) - 1 else features.index[-1]
                 cand_features.at[frame, "kick_dist"] = features["player_dist"].loc[frame:next_frame].max()
 
-            cand_features["score"] = utils.score_frames_elastic(cand_features)
+            cand_features["score"] = utils.score_frames_major(cand_features)
             return cand_features["score"].idxmax(), features, cand_features
 
     @staticmethod
@@ -355,7 +357,7 @@ class ELASTIC:
                 prev_frame = cand_features.index[i - 1] if i > 0 else features.index[0]
                 cand_features.at[frame, "kick_dist"] = features["player_dist"].loc[prev_frame:frame].max()
 
-            cand_features["score"] = utils.score_frames_elastic(cand_features)
+            cand_features["score"] = utils.score_frames_major(cand_features)
             return cand_features["score"].idxmax(), features, cand_features
 
     @staticmethod
@@ -635,7 +637,7 @@ class ELASTIC:
             The playing period of which to synchronize the event and tracking data.
         """
         period_events = self.events[self.events["period_id"] == period].copy()
-        major_events = period_events[period_events["spadl_type"].isin(self.major_types)]
+        major_events = period_events[period_events["spadl_type"].isin(self.pre_sync_types)]
 
         for i in tqdm(major_events.index[1:], desc=f"Syncing major events in period {period}"):
             event_type = self.events.at[i, "spadl_type"]
@@ -649,8 +651,11 @@ class ELASTIC:
                     self.last_matched_frame = best_frame
 
     def _sync_minor_events(self):
-        minor_types = list(set(config.MINOR) - set(self.major_types))
-        minor_events = self.events[self.events["spadl_type"].isin(minor_types)]
+        minor_events = self.events[self.events["spadl_type"].isin(self.post_sync_types)]
+
+        if minor_events.empty:
+            return
+
         self.events.loc[minor_events.index, "frame"] = np.nan
         self.matched_frames.loc[minor_events.index] = np.nan
 
@@ -667,7 +672,7 @@ class ELASTIC:
 
             if event_type == "dispossessed" and self.events.at[i, "next_type"] == "tackle":
                 # First synchronize the following tackle and assign the tackling frame to the dispossessed event
-                if "tackle" in minor_types:
+                if "tackle" in self.post_sync_types:
                     continue
                 else:
                     # The next tackle has been already synchronized in the previous stage
@@ -778,7 +783,7 @@ class ELASTIC:
         prev_frames = self.matched_frames.loc[: event_idx - 1].values
         min_frame = np.nanmax([np.nanmax(prev_frames), 0])
 
-        if event_type in config.MINOR and event["next_type"] not in config.MINOR:
+        if event_type in self.post_sync_types and event["next_type"] not in self.post_sync_types:
             next_frames = self.matched_frames.loc[event_idx + 1 :].values
             max_frame = np.nanmin([np.nanmin(next_frames), np.inf])
             windows = self._window_of_frames(event, s, min_frame, max_frame)

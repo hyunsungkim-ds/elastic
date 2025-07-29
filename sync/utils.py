@@ -64,7 +64,7 @@ angle_change_func = linear_scoring_func(-1, 1, increasing=False)  # increasing f
 frame_delay_func = linear_scoring_func(0, 125, increasing=False)
 
 
-def score_frames_elastic(features: pd.DataFrame) -> np.ndarray:
+def score_frames_major(features: pd.DataFrame) -> np.ndarray:
     ball_accel_score = 20 * ball_accel_func(features["ball_accel"].values)
     player_dist_score = 20 * player_dist_func(features["player_dist"].values)
     kick_dist_score = 20 * kick_dist_func(features["kick_dist"].values)
