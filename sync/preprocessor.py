@@ -143,15 +143,15 @@ class Preprocessor:
                     period_traces.loc[period_traces.index[1:], "speed"] = np.sqrt(vx**2 + vy**2)
                     period_traces["speed"] = period_traces["speed"].bfill()
 
-                    # speed = np.sqrt(vx**2 + vy**2)
-                    # accel = savgol_filter(np.diff(speed) * self.fps, window_length=9, polyorder=2)
-                    # period_traces.loc[period_traces.index[1:-1], "accel"] = accel
-                    # period_traces["accel"] = period_traces["accel"].bfill().ffill()
+                    speed = np.sqrt(vx**2 + vy**2)
+                    accel = savgol_filter(np.diff(speed) * self.fps, window_length=9, polyorder=2)
+                    period_traces.loc[period_traces.index[1:-1], "accel_s"] = accel
+                    period_traces["accel_s"] = period_traces["accel_s"].bfill().ffill()
 
                     ax = savgol_filter(np.diff(vx) * self.fps, window_length=9, polyorder=2)
                     ay = savgol_filter(np.diff(vy) * self.fps, window_length=9, polyorder=2)
-                    period_traces.loc[period_traces.index[1:-1], "accel"] = np.sqrt(ax**2 + ay**2)
-                    period_traces["accel"] = period_traces["accel"].bfill().ffill()
+                    period_traces.loc[period_traces.index[1:-1], "accel_v"] = np.sqrt(ax**2 + ay**2)
+                    period_traces["accel_v"] = period_traces["accel_v"].bfill().ffill()
                     ret_list.append(period_traces)
 
         ret = pd.concat(ret_list, ignore_index=True)

@@ -20,8 +20,8 @@ if __name__ == "__main__":
     # Find SPADL-style event types
     events = find_spadl_event_types(events)
 
-    # Game-by-game event-tracking synchronization
-    game_ids = np.sort(events["stats_perform_match_id"].unique())[3:]
+    # Per-game event-tracking synchronization
+    game_ids = np.sort(events["stats_perform_match_id"].unique())
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
 
     erroneous_games = []

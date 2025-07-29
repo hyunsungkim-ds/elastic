@@ -1,6 +1,6 @@
 import os
 import sys
-from typing import Callable, List, Tuple
+from typing import Callable, Tuple
 
 if not os.getcwd() in sys.path:
     sys.path.append(os.getcwd())
@@ -29,7 +29,7 @@ class ELASTIC:
     """
 
     def __init__(self, events: pd.DataFrame, tracking: pd.DataFrame, args: dict = None) -> None:
-        schema.event_schema.validate(events)
+        schema.elastic_event_schema.validate(events)
         schema.tracking_schema.validate(tracking)
 
         # Ensure unique indices
@@ -66,15 +66,13 @@ class ELASTIC:
         self.matched_frames = pd.Series(np.nan, index=self.events.index)
         self.receive_det = None
 
-    def detect_kickoff(self, period: int, buffer_seconds=5) -> int:
+    def detect_kickoff(self, period: int) -> int:
         """Searches for the kickoff frame in a given playing period.
 
         Parameters
         ----------
         period: int
             The given playing period.
-        kickoff_buffer: int
-            Length of the search window (in seconds) for the kickoff frame of a playing period.
 
         Returns
         -------
@@ -86,7 +84,7 @@ class ELASTIC:
             raise Exception("First event is not a pass!")
 
         frame = self.tracking.loc[self.tracking["period_id"] == period, "frame"].min()
-        frames_to_check = np.arange(frame, frame + self.fps * buffer_seconds)
+        frames_to_check = np.arange(frame, frame + self.fps * config.TIME_KICKOFF)
         kickoff_player = kickoff_event["player_id"]
 
         inside_center_circle = self.tracking[
@@ -133,7 +131,7 @@ class ELASTIC:
         if len(dist_idxs) == 0:
             best_idx = np.argmin(dists)
         else:
-            best_idx = ball_window["accel"].values[dist_idxs].argmax()
+            best_idx = ball_window["accel_v"].values[dist_idxs].argmax()
 
         return player_window.reset_index()["frame"].iloc[best_idx]
 
@@ -162,7 +160,7 @@ class ELASTIC:
         ball_window: pd.DataFrame
             All frames containing the ball in the given window.
         oppo_window (optional): pd.DataFrame or None
-            All frames containing the dueling opponent in the given window
+            All frames containing the dueling opponent in the given window.
         """
         player_id = event["player_id"]
 
@@ -613,8 +611,8 @@ class ELASTIC:
         features = pd.DataFrame(index=player_window.index)
         features["frame_delay"] = (features.index.values - event_frame).clip(0)
         features["player_speed"] = player_window["speed"].values
-        features["player_accel"] = player_window["accel"].values
-        features["ball_accel"] = ball_window["accel"].values
+        features["player_accel"] = player_window["accel_v"].values
+        features["ball_accel"] = ball_window["accel_v"].values
         features["ball_height"] = ball_window["z"].values
         features["player_dist"] = np.sqrt((player_x - ball_x) ** 2 + (player_y - ball_y) ** 2)
 

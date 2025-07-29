@@ -3,7 +3,7 @@ from pandera import Check, Column, DataFrameSchema, Index
 
 from sync import config
 
-event_schema = DataFrameSchema(
+elastic_event_schema = DataFrameSchema(
     {
         "period_id": Column(int, Check(lambda s: s.isin([1, 2]))),
         "utc_timestamp": Column(np.dtype("datetime64[ns]")),
@@ -11,6 +11,19 @@ event_schema = DataFrameSchema(
         "spadl_type": Column(str, Check(lambda s: s.isin(config.SPADL_TYPES))),
         "outcome": Column(bool),
         "offside": Column(bool),
+    },
+    index=Index(int),
+)
+
+etsy_event_schema = DataFrameSchema(
+    {
+        "period_id": Column(int, Check(lambda s: s.isin([1, 2]))),
+        "timestamp": Column(np.dtype("datetime64[ns]")),
+        "player_id": Column(object),
+        "spadl_type": Column(str, Check(lambda s: s.isin(config.SPADL_TYPES))),
+        "start_x": Column(float, Check(lambda s: (s >= 0) & (s <= config.FIELD_LENGTH))),
+        "start_y": Column(float, Check(lambda s: (s >= 0) & (s <= config.FIELD_WIDTH))),
+        # "bodypart_id": Column(int, Check(lambda s: s.isin(range(len(config.SPADL_BODYPARTS))))),
     },
     index=Index(int),
 )
@@ -40,7 +53,8 @@ tracking_schema = DataFrameSchema(
         "y": Column(float),
         "z": Column(float, Check(lambda s: s >= 0), nullable=True),  # Mandatory for ball (not players)
         "speed": Column(float),
-        "accel": Column(float),
+        "accel_s": Column(float),  # Derivative of speed
+        "accel_v": Column(float),  # Norm of the derivative of 2D velocity vector
     },
     index=Index(int),
 )

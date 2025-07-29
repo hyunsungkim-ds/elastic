@@ -138,7 +138,7 @@ class ReceiveDetector:
 
             features = pd.DataFrame(index=player_x.index)
             features["ball_height"] = ball_window["z"].values
-            features["ball_accel"] = ball_window["accel"].values
+            features["ball_accel"] = ball_window["accel_v"].values
 
             next_player_window = window[window["player_id"] == next_player]
             if next_player_window.empty:

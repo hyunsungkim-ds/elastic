@@ -36,16 +36,26 @@ SPADL_TYPES = [
 ]
 SPADL_BODYPARTS = ["foot", "head", "other", "head/other", "foot_left", "foot_right"]
 
+# Event categories for ELASTIC
 PASS_LIKE_OPEN = ["pass", "cross", "shot", "clearance", "keeper_punch", "shot_block"]
 SET_PIECE_OOP = ["throw_in", "goalkick", "corner_short", "corner_crossed"]
 SET_PIECE = SET_PIECE_OOP + ["freekick_short", "freekick_crossed", "shot_freekick", "shot_penalty"]
 INCOMING = ["interception", "keeper_save", "keeper_claim", "keeper_pick_up", "keeper_sweeper", "ball_recovery"]
 MINOR = ["tackle", "take_on", "second_take_on", "foul", "bad_touch", "dispossessed"]
 
+TIME_KICKOFF = 5  # unit: seconds
 TIME_PASS_LIKE_OPEN = 5  # unit: seconds
-TIME_INCOMING = 5  # unit: seconds
 TIME_SET_PIECE = 15  # unit: seconds, 10 in the ETSY paper
+TIME_INCOMING = 5  # unit: seconds
 TIME_MINOR = 5  # unit: seconds
+
+# Additional event categories for ETSY
+FAULT_LIKE = ["foul", "tackle"]
+BAD_TOUCH = ["bad_touch"]
+NOT_HANDLED = ["take_on", "second_take_on", "dispossessed"]
+
+TIME_FAULT_LIKE = 5  # unit: seconds
+TIME_BAD_TOUCH = 5  # unit: seconds
 
 EVENT_COLS = [
     "frame",
