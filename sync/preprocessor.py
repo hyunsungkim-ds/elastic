@@ -140,10 +140,10 @@ class Preprocessor:
                 if not period_traces.empty:
                     vx = savgol_filter(np.diff(period_traces["x"].values) * self.fps, window_length=15, polyorder=2)
                     vy = savgol_filter(np.diff(period_traces["y"].values) * self.fps, window_length=15, polyorder=2)
-                    period_traces.loc[period_traces.index[1:], "speed"] = np.sqrt(vx**2 + vy**2)
+                    speed = np.sqrt(vx**2 + vy**2)
+                    period_traces.loc[period_traces.index[1:], "speed"] = speed
                     period_traces["speed"] = period_traces["speed"].bfill()
 
-                    speed = np.sqrt(vx**2 + vy**2)
                     accel = savgol_filter(np.diff(speed) * self.fps, window_length=9, polyorder=2)
                     period_traces.loc[period_traces.index[1:-1], "accel_s"] = accel
                     period_traces["accel_s"] = period_traces["accel_s"].bfill().ffill()

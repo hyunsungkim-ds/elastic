@@ -50,12 +50,12 @@ TIME_INCOMING = 5  # unit: seconds
 TIME_MINOR = 5  # unit: seconds
 
 # Additional event categories for ETSY
-FAULT_LIKE = ["foul", "tackle"]
 BAD_TOUCH = ["bad_touch"]
+FAULT_LIKE = ["foul", "tackle"]
 NOT_HANDLED = ["take_on", "second_take_on", "dispossessed"]
 
-TIME_FAULT_LIKE = 5  # unit: seconds
 TIME_BAD_TOUCH = 5  # unit: seconds
+TIME_FAULT_LIKE = 5  # unit: seconds
 
 EVENT_COLS = [
     "frame",

@@ -367,11 +367,6 @@ class ELASTIC:
             features["player_dist"] = savgol_filter(features["player_dist"], window_length=savgol_wlen, polyorder=2)
             features["oppo_dist"] = savgol_filter(features["oppo_dist"], window_length=savgol_wlen, polyorder=2)
 
-        # features["rel_speed"] = features["player_dist"].diff().shift(-1).ffill() * fps
-        # features["rel_accel"] = abs(features["rel_speed"].diff().fillna(0) * fps)
-        # if len(features) > savgol_wlen:
-        #     features["rel_accel"] = savgol_filter(features["rel_accel"], window_length=9, polyorder=2)
-
         player_dist_valleys = find_peaks(-features["player_dist"], prominence=0.1)[0] + 1
         candidates = player_dist_valleys.tolist() + [0]
 
@@ -397,7 +392,6 @@ class ELASTIC:
             cand_features.at[i, "player_dist"] = features.loc[i - 3 : i + 3, "player_dist"].min()
             cand_features.at[i, "oppo_dist"] = features.loc[i - 3 : i + 3, "oppo_dist"].min()
             cand_features.at[i, "ball_height"] = features.loc[i - 3 : i + 3, "ball_height"].min()
-            # cand_features.at[i, "rel_speed"] = features.loc[i - 3 : i + 3, "rel_speed"].max()
             cand_features.at[i, "ball_accel"] = features.loc[i - 3 : i + 3, "ball_accel"].max()
 
         cand_features = cand_features[
@@ -545,12 +539,12 @@ class ELASTIC:
         if event_type in config.PASS_LIKE_OPEN + ["bad_touch"]:
             s = config.TIME_PASS_LIKE_OPEN
             matching_func = ELASTIC._detect_pass_like
-        elif event_type in config.INCOMING:
-            s = config.TIME_INCOMING
-            matching_func = ELASTIC._detect_incoming
         elif event_type in config.SET_PIECE:
             s = config.TIME_SET_PIECE
             matching_func = ELASTIC._detect_setpiece
+        elif event_type in config.INCOMING:
+            s = config.TIME_INCOMING
+            matching_func = ELASTIC._detect_incoming
         elif event_type == "tackle":
             s = config.TIME_INCOMING
             matching_func = ELASTIC._detect_tackle
@@ -603,10 +597,10 @@ class ELASTIC:
         features: pd.DataFrame
             Features for each frame in the window that is used for matching.
         """
-        ball_x = ball_window["x"].values
-        ball_y = ball_window["y"].values
         player_x = player_window["x"].values
         player_y = player_window["y"].values
+        ball_x = ball_window["x"].values
+        ball_y = ball_window["y"].values
 
         features = pd.DataFrame(index=player_window.index)
         features["frame_delay"] = (features.index.values - event_frame).clip(0)
@@ -648,7 +642,7 @@ class ELASTIC:
                     self.matched_frames[i] = best_frame
                     self.last_matched_frame = best_frame
 
-    def _sync_minor_events(self):
+    def _sync_minor_events(self) -> None:
         minor_events = self.events[self.events["spadl_type"].isin(self.post_sync_types)]
 
         if minor_events.empty:
@@ -785,7 +779,6 @@ class ELASTIC:
             next_frames = self.matched_frames.loc[event_idx + 1 :].values
             max_frame = np.nanmin([np.nanmin(next_frames), np.inf])
             windows = self._window_of_frames(event, s, min_frame, max_frame)
-            windows = self._window_of_frames(event, s, min_frame)
         else:
             windows = self._window_of_frames(event, s, min_frame)
 

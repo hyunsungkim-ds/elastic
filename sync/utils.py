@@ -1,5 +1,3 @@
-"""Defines ETSY scoring functions."""
-
 from typing import Callable
 
 import numpy as np
@@ -26,35 +24,7 @@ def linear_scoring_func(min_input: float, max_input: float, increasing=False) ->
     return lambda x: np.maximum(0, np.minimum(1, func(x)))
 
 
-max_dist = np.sqrt(FIELD_LENGTH**2 + FIELD_WIDTH**2)
-player_ball_dist_func = linear_scoring_func(0, max_dist, increasing=False)
-player_event_dist_func = linear_scoring_func(0, max_dist, increasing=False)
-ball_event_dist_func = linear_scoring_func(0, max_dist, increasing=False)
-
-
-def score_frames_etsy(
-    mask_func: Callable,
-    player_ball_dists: np.ndarray,
-    player_event_dists: np.ndarray,
-    ball_event_dists: np.ndarray,
-    ball_heights: np.ndarray,
-    ball_accels: np.ndarray,
-    timestamps: pd.Series,
-    # bodypart,
-) -> np.ndarray:
-    scores = np.zeros(len(player_ball_dists))
-    masked_idxs = mask_func(player_ball_dists, ball_heights, ball_accels, timestamps)
-
-    if len(masked_idxs[0]) > 0:
-        player_ball_dist_score = 100 / 3 * player_ball_dist_func(player_ball_dists[masked_idxs])
-        player_event_dist_score = 100 / 3 * player_event_dist_func(player_event_dists[masked_idxs])
-        ball_event_dist_score = 100 / 3 * ball_event_dist_func(ball_event_dists[masked_idxs])
-        scores[masked_idxs] += player_ball_dist_score + player_event_dist_score + ball_event_dist_score
-
-    return scores
-
-
-event_dist_func = linear_scoring_func(0, 10, increasing=False)
+# Scoring functions for ELASTIC
 player_dist_func = linear_scoring_func(0, 3, increasing=False)
 player_speed_func = linear_scoring_func(0, 5, increasing=True)
 player_accel_func = linear_scoring_func(0, 5, increasing=True)
@@ -103,3 +73,15 @@ def score_frames_receive(features: pd.DataFrame) -> np.ndarray:
     next_player_dist_score = 25 * player_dist_func(features["next_player_dist"].values)
     kick_dist_score = 25 * kick_dist_func(features["kick_dist"].values)
     return ball_accel_score + closest_dist_score + next_player_dist_score + kick_dist_score
+
+
+# Scoring function for ETSY
+max_dist = np.sqrt(FIELD_LENGTH**2 + FIELD_WIDTH**2)
+etsy_dist_func = linear_scoring_func(0, max_dist, increasing=False)
+
+
+def score_frames_etsy(features: pd.DataFrame) -> np.ndarray:
+    player_ball_dist_score = 100 / 3 * etsy_dist_func(features["player_ball_dist"].values)
+    player_event_dist_score = 100 / 3 * etsy_dist_func(features["player_event_dist"].values)
+    ball_event_dist_score = 100 / 3 * etsy_dist_func(features["ball_event_dist"].values)
+    return player_ball_dist_score + player_event_dist_score + ball_event_dist_score

@@ -18,7 +18,7 @@ elastic_event_schema = DataFrameSchema(
 etsy_event_schema = DataFrameSchema(
     {
         "period_id": Column(int, Check(lambda s: s.isin([1, 2]))),
-        "timestamp": Column(np.dtype("datetime64[ns]")),
+        "utc_timestamp": Column(np.dtype("datetime64[ns]")),
         "player_id": Column(object),
         "spadl_type": Column(str, Check(lambda s: s.isin(config.SPADL_TYPES))),
         "start_x": Column(float, Check(lambda s: (s >= 0) & (s <= config.FIELD_LENGTH))),
