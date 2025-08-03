@@ -4,7 +4,7 @@
 	</h1>
 </div>
 
-Source code for the paper **ELASTIC: Event-Tracking Data Synchronization in Soccer Without Annotated Event Locations** by Kim et al., 2025 (under review).
+Source code for the paper **ELASTIC: Event-Tracking Data Synchronization in Soccer Without Annotated Event Locations** by Kim et al., MLSA 2025.
 
 ## Introduction
 **ELASTIC (Event-Location-AgnoSTIC synchronizer)** is an algorithm for synchronizing event and tracking data in soccer. The source code is largely based on its previous work, [ETSY](https://github.com/ML-KULeuven/ETSY.git) (Van Roy et al., 2023), but the key difference is that our algorithm does not rely on human-annotated event locations, which are also prone to spatial errors.
@@ -35,7 +35,7 @@ Using `ELASTIC.plot_window_features` and `ReceiveDetector.plot_window_features`,
 </p>
 
 ## Data Availability
-Our code requires tracking data in the [kloppy](https://kloppy.pysport.org) format and event data in the [SPADL](https://socceraction.readthedocs.io/en/latest/documentation/spadl/spadl.html) format. However, the dataset used in this project is proprietary and cannot be publicly shared as it is an internal asset of the data provider. We will soon upload the tutorial code using the public [Metrica dataset](https://github.com/metrica-sports/sample-data.git), so that users can easily test the code without their own datasets.
+Our code requires tracking data in the [kloppy](https://kloppy.pysport.org) format and event data in the [SPADL](https://socceraction.readthedocs.io/en/latest/documentation/spadl/spadl.html) format. However, the dataset used in this project is proprietary and cannot be publicly shared as it is an internal asset of the data provider. We will soon upload the tutorial code using the public [PFF FC World Cup dataset](https://www.blog.fc.pff.com/blog/enhanced-2022-world-cup-dataset), so that users can easily test the code without their own datasets.
 
 If you have your own event and tracking datasets, you can apply ELASTIC by placing them within the following paths:
 - Match lineups: A single parquet file at `LINEUP_PATH=data/ajax/lineup/line_up.parquet`
@@ -43,3 +43,19 @@ If you have your own event and tracking datasets, you can apply ELASTIC by placi
 - Tracking data: per-match Parquet files in `TRACKING_PATH=data/ajax/tracking` directory
 
 These paths are defined as constants in `sync/config.py`, so you can freely modify them as you wish.
+
+## Research
+If you make use of this package in your research, please consider citing the following paper:
+```
+@inproceedings{Kim2025,
+  author       = {Kim, Hyunsung and
+                  Choi, Hoyoung and
+                  Seo, Sangwoo and
+                  Boomstra, Tom and
+                  Yoon, Jinsung and
+                  Park, Chanyoung},
+  title        = {{ELASTIC}: Event-Tracking Data Synchronization in Soccer Without Annotated Event Locations},
+  booktitle    = {ECML PKDD Workshop on Machine Learning and Data Mining for Sports Analytics},
+  year         = {2025},
+}
+```
