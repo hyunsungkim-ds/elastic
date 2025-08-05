@@ -835,7 +835,8 @@ class ELASTIC:
                 plt.plot(features[feat], label=feat, c=color)
 
             ymax = 25
-            plt.xticks(rotation=45)
+            # plt.xticks(rotation=45)
+            plt.xticks()
             plt.ylim(0, ymax)
             plt.vlines(windows[0], 0, ymax, color="k", linestyles="-", label="annot_frame")
 
