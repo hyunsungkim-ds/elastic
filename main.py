@@ -9,7 +9,7 @@ import pandas as pd
 from pandera.errors import SchemaError
 
 from sync import config, elastic
-from sync.preprocessor import Preprocessor, find_spadl_event_types
+from tools.preprocessor import Preprocessor, find_spadl_event_types
 
 if __name__ == "__main__":
     lineups = pd.read_parquet(config.LINEUP_PATH)

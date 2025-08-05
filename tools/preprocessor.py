@@ -80,30 +80,30 @@ class Preprocessor:
 
             if home_mean_x < away_mean_x:  # Rotate the away team's events
                 away_events = period_events[period_events["object_id"].str.startswith("away", na=False)].copy()
-                self.events.loc[away_events.index, "start_x"] = (105 - away_events["start_x"]).round(2)
-                self.events.loc[away_events.index, "start_y"] = (68 - away_events["start_y"]).round(2)
+                self.events.loc[away_events.index, "start_x"] = (config.FIELD_LENGTH - away_events["start_x"]).round(2)
+                self.events.loc[away_events.index, "start_y"] = (config.FIELD_WIDTH - away_events["start_y"]).round(2)
             else:  # Rotate the home team's events
                 home_events = period_events[period_events["object_id"].str.startswith("home", na=False)].copy()
-                self.events.loc[home_events.index, "start_x"] = (105 - home_events["start_x"]).round(2)
-                self.events.loc[home_events.index, "start_y"] = (68 - home_events["start_y"]).round(2)
+                self.events.loc[home_events.index, "start_x"] = (config.FIELD_LENGTH - home_events["start_x"]).round(2)
+                self.events.loc[home_events.index, "start_y"] = (config.FIELD_WIDTH - home_events["start_y"]).round(2)
 
     def refine_events(self):
         self.calculate_event_timestamps()
         self.find_object_ids()
         self.align_directions_of_play()
 
-    def combine_events_and_traces(self, ffill=False) -> pd.DataFrame:
-        merged_cols = ["period_id", "timestamp", "object_id", "spadl_type", "start_x", "start_y"]
+    def merge_events_and_traces(self, ffill=False) -> pd.DataFrame:
+        event_cols = ["period_id", "timestamp", "object_id", "spadl_type", "start_x", "start_y"]
         renamed_cols = ["period_id", "timestamp", "event_player", "event_type", "event_x", "event_y"]
 
-        events = self.events[merged_cols].copy()
+        events = self.events[event_cols].copy()
         events["timestamp"] = ((events["timestamp"] * self.fps).round().astype(int) / self.fps).round(2)
-        ret = pd.merge(self.traces, events, how="left").rename(columns=dict(zip(merged_cols, renamed_cols)))
+        merged_data = pd.merge(self.traces, events, how="left").rename(columns=dict(zip(event_cols, renamed_cols)))
 
         if ffill:
-            ret[renamed_cols[2:]] = ret[renamed_cols[2:]].ffill()
+            merged_data[renamed_cols[2:]] = merged_data[renamed_cols[2:]].ffill()
 
-        return ret
+        return merged_data
 
     def format_events_for_syncer(self) -> pd.DataFrame:
         if "timestamp" not in self.events.columns or "object_id" not in self.events.columns:

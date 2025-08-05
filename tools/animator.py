@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+from datetime import timedelta
 from typing import Dict
 
 if not os.getcwd() in sys.path:
@@ -12,17 +13,18 @@ import pandas as pd
 from matplotlib import animation, axes, collections, lines, text
 from matplotlib.patches import Rectangle
 
-import src.matplotsoccer as mps
-from sync.preprocessor import Preprocessor, find_spadl_event_types
+import tools.matplotsoccer as mps
+from tools.preprocessor import Preprocessor, find_spadl_event_types
 
 anim_config = {
+    "sports": "soccer",  # soccer or basketball
     "figsize": (10.8, 7.2),
     "fontsize": 15,
     "player_size": 400,
     "ball_size": 150,
     "star_size": 150,
     "cell_size": 50,
-    "player_history": 50,
+    "player_history": 20,
     "ball_history": 50,
 }
 
@@ -34,7 +36,6 @@ class Animator:
         bg_heatmaps: np.ndarray = None,
         player_dests: pd.DataFrame = None,
         player_sizes: np.ndarray = None,
-        sports="soccer",  # soccer or basketball
         show_times=True,
         show_episodes=False,
         show_events=False,
@@ -49,7 +50,7 @@ class Animator:
         self.dests = player_dests
         self.sizes = player_sizes
 
-        self.sports = sports
+        self.sports = anim_config["sports"]
         self.show_times = show_times
         self.show_episodes = show_episodes
         self.show_events = show_events
@@ -57,7 +58,7 @@ class Animator:
         self.rotate_pitch = rotate_pitch
         self.anonymize = anonymize
 
-        self.pitch_size = (105, 68) if sports == "soccer" else (30, 15)
+        self.pitch_size = (105, 68) if self.sports == "soccer" else (30, 15)
         self.small_image = small_image
         self.play_speed = play_speed
 
@@ -303,8 +304,9 @@ class Animator:
             dest_x, dest_y, line_x, line_y, guide_scat, guide_plots = Animator.plot_guides(traces, self.dests, ax)
 
         if self.show_times:
-            time_col = "timestamp" if self.sports == "soccer" else "time_left"
-            time_texts = traces[time_col].apply(lambda x: f"{int(x // 60):02d}:{x % 60:05.2f}").values
+            timestamps = traces["timestamp"] if self.sports == "soccer" else traces["time_left"]
+            timestamps = timestamps.dt.total_seconds() if isinstance(timestamps.iloc[0], timedelta) else timestamps
+            time_texts = timestamps.apply(lambda x: f"{int(x // 60):02d}:{x % 60:05.2f}").values
             time_annot = ax.text(
                 0,
                 annot_y,
@@ -330,12 +332,13 @@ class Animator:
             episode_annot.set_animated(True)
 
         if self.show_events:
-            if "event_type" in traces.columns:  # (for Metrica or Stats Perform data)
-                event_texts = traces.apply(lambda x: f"{x['event_type']} by {x['event_player']}", axis=1)
-                event_texts = np.where(event_texts == "nan by nan", "", event_texts)
-            else:  # if "event_types" in traces.columns: (for Fitogether data)
-                event_texts = traces["event_types"].fillna(method="ffill")
-                event_texts = np.where(event_texts.isna(), "", event_texts)
+            assert "event_type" in traces.columns
+            event_texts = traces.apply(lambda x: f"{x['event_type']} by {x['event_player']}", axis=1)
+            event_texts = np.where(event_texts == "nan by nan", "", event_texts)
+
+            # elif "event_types" in traces.columns:
+            #     event_texts = traces["event_types"].fillna(method="ffill")
+            #     event_texts = np.where(event_texts.isna(), "", event_texts)
 
             annot_x = self.pitch_size[0] / 2
             event_annot = ax.text(
@@ -488,7 +491,7 @@ if __name__ == "__main__":
 
         proc = Preprocessor(game_lineup, game_events, traces)
         proc.refine_events()
-        combined_traces = proc.combine_events_and_traces(ffill=True)
+        combined_traces = proc.merge_events_and_traces(ffill=True)
 
     print("2. Animate selected trajectories")
     end_frame = combined_traces.index[-1] if args.end_frame == 0 else args.end_frame
