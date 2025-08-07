@@ -379,9 +379,9 @@ class ETSY:
             for feat, color in colors.items():
                 plt.plot(features[feat], label=feat, c=color)
 
-            ymax = 20
-            plt.xticks(rotation=45)
-            plt.ylim(-5, ymax)
+            ymax = 25
+            plt.xticks()
+            plt.ylim(0, ymax)
             # plt.vlines(windows[0], 0, ymax, color="k", linestyles="-", label="annot_frame")
 
             if isinstance(cand_features, pd.DataFrame):
