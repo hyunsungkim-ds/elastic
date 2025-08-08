@@ -9,8 +9,8 @@ elastic_event_schema = DataFrameSchema(
         "utc_timestamp": Column(np.dtype("datetime64[ns]")),
         "player_id": Column(object),
         "spadl_type": Column(str, Check(lambda s: s.isin(config.SPADL_TYPES))),
-        "outcome": Column(bool),
-        "offside": Column(bool),
+        "success": Column(bool),
+        # "offside": Column(bool),
     },
     index=Index(int),
 )
@@ -35,8 +35,8 @@ synced_event_schema = DataFrameSchema(
         "frame": Column(float, Check(lambda s: (s >= 0) & (round(s) == s)), nullable=True),
         "player_id": Column(object),
         "spadl_type": Column(str, Check(lambda s: s.isin(config.SPADL_TYPES))),
-        "outcome": Column(bool),
-        "offside": Column(bool),
+        "success": Column(bool),
+        # "offside": Column(bool),
     },
     index=Index(int),
 )

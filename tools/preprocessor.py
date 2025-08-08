@@ -1,15 +1,15 @@
 import fnmatch
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import numpy as np
 import pandas as pd
-from scipy.signal import find_peaks, savgol_filter
+from scipy.signal import savgol_filter
 
 from sync import config
 
 
 class Preprocessor:
-    def __init__(self, lineup: pd.DataFrame, events: pd.DataFrame, traces: pd.DataFrame, fps=25):
+    def __init__(self, lineup: pd.DataFrame, events: pd.DataFrame, tracking: pd.DataFrame, fps=25):
         lineup_cols = ["contestant_name", "shirt_number", "match_name"]
         self.lineup = lineup[lineup_cols].copy().sort_values(lineup_cols)
 
@@ -30,9 +30,9 @@ class Preprocessor:
         events = events[event_dtypes.keys()].astype(event_dtypes)
         self.events = events[(events["spadl_type"] != "tackle") | events["outcome"]].copy().reset_index(drop=True)
 
-        self.traces = traces.copy().sort_values(["period_id", "timestamp"], ignore_index=True)
-        self.traces["timestamp"] = self.traces["timestamp"].round(2)
-        self.traces["ball_z"] = (self.traces["ball_z"].astype(float) / 100).round(2)  # centimeters to meters
+        self.tracking = tracking.copy().sort_values(["period_id", "timestamp"], ignore_index=True)
+        self.tracking["timestamp"] = self.tracking["timestamp"].round(2)
+        self.tracking["ball_z"] = (self.tracking["ball_z"].astype(float) / 100).round(2)  # centimeters to meters
         self.fps = fps
 
     def calculate_event_timestamps(self):
@@ -43,40 +43,41 @@ class Preprocessor:
             self.events.loc[period_events.index, "timestamp"] = period_tds.apply(lambda x: x.total_seconds())
 
     def calculate_tracking_utc_timestamps(self):
-        self.traces["frame"] = (self.traces["timestamp"] * self.fps).round().astype(int)
-        max_frame_p1 = self.traces.loc[self.traces["period_id"] == 1, "frame"].max()
-        self.traces.loc[self.traces["period_id"] == 2, "frame"] += max_frame_p1 + 1
+        self.tracking["frame"] = (self.tracking["timestamp"] * self.fps).round().astype(int)
+        max_frame_p1 = self.tracking.loc[self.tracking["period_id"] == 1, "frame"].max()
+        self.tracking.loc[self.tracking["period_id"] == 2, "frame"] += max_frame_p1 + 1
 
         def utc_timestamp(t: float, offset: np.datetime64) -> np.datetime64:
             return offset + timedelta(seconds=t)
 
         if self.events is not None:
-            self.traces["utc_timestamp"] = pd.NaT
-            for i in [1, 2]:
+            self.tracking["utc_timestamp"] = pd.NaT
+            for i in self.events["period_id"].unique():
                 offset = self.events[self.events["period_id"] == i]["utc_timestamp"].iloc[0].replace(microsecond=0)
-                period_ts = self.traces[self.traces["period_id"] == i]["timestamp"].apply(utc_timestamp, args=(offset,))
-                self.traces.loc[period_ts.index, "utc_timestamp"] = period_ts
+                period_tracking = self.tracking[self.tracking["period_id"] == i]
+                period_ts = period_tracking["timestamp"].apply(utc_timestamp, args=(offset,))
+                self.tracking.loc[period_ts.index, "utc_timestamp"] = period_ts
 
     def find_object_ids(self):
         self.lineup["object_id"] = None
-        home_id_cols = [c for c in self.traces.columns if fnmatch.fnmatch(c, "home_*_id")]
-        away_id_cols = [c for c in self.traces.columns if fnmatch.fnmatch(c, "away_*_id")]
+        home_id_cols = [c for c in self.tracking.columns if fnmatch.fnmatch(c, "home_*_id")]
+        away_id_cols = [c for c in self.tracking.columns if fnmatch.fnmatch(c, "away_*_id")]
 
         for c in home_id_cols + away_id_cols:
-            player_id_series = self.traces[c].dropna()
+            player_id_series = self.tracking[c].dropna()
             if not player_id_series.empty:
                 self.lineup.at[player_id_series.iloc[0], "object_id"] = c[:-3]
 
         self.events["object_id"] = self.events["player_id"].map(self.lineup["object_id"].to_dict())
 
     def align_directions_of_play(self):
-        home_x_cols = [c for c in self.traces.columns if fnmatch.fnmatch(c, "home_*_x")]
-        away_x_cols = [c for c in self.traces.columns if fnmatch.fnmatch(c, "away_*_x")]
+        home_x_cols = [c for c in self.tracking.columns if fnmatch.fnmatch(c, "home_*_x")]
+        away_x_cols = [c for c in self.tracking.columns if fnmatch.fnmatch(c, "away_*_x")]
 
         for i in self.events["period_id"].unique():
             period_events = self.events[self.events["period_id"] == i].copy()
-            home_mean_x = self.traces.loc[self.traces["period_id"] == i, home_x_cols].mean().mean()
-            away_mean_x = self.traces.loc[self.traces["period_id"] == i, away_x_cols].mean().mean()
+            home_mean_x = self.tracking.loc[self.tracking["period_id"] == i, home_x_cols].mean().mean()
+            away_mean_x = self.tracking.loc[self.tracking["period_id"] == i, away_x_cols].mean().mean()
 
             if home_mean_x < away_mean_x:  # Rotate the away team's events
                 away_events = period_events[period_events["object_id"].str.startswith("away", na=False)].copy()
@@ -92,71 +93,71 @@ class Preprocessor:
         self.find_object_ids()
         self.align_directions_of_play()
 
-    def merge_events_and_traces(self, ffill=False) -> pd.DataFrame:
+    def merge_events_and_tracking(self, ffill=False) -> pd.DataFrame:
         event_cols = ["period_id", "timestamp", "object_id", "spadl_type", "start_x", "start_y"]
         renamed_cols = ["period_id", "timestamp", "event_player", "event_type", "event_x", "event_y"]
 
         events = self.events[event_cols].copy()
         events["timestamp"] = ((events["timestamp"] * self.fps).round().astype(int) / self.fps).round(2)
-        merged_data = pd.merge(self.traces, events, how="left").rename(columns=dict(zip(event_cols, renamed_cols)))
+        merged_df = pd.merge(self.tracking, events, how="left").rename(columns=dict(zip(event_cols, renamed_cols)))
 
         if ffill:
-            merged_data[renamed_cols[2:]] = merged_data[renamed_cols[2:]].ffill()
+            merged_df[renamed_cols[2:]] = merged_df[renamed_cols[2:]].ffill()
 
-        return merged_data
+        return merged_df
 
     def format_events_for_syncer(self) -> pd.DataFrame:
         if "timestamp" not in self.events.columns or "object_id" not in self.events.columns:
             self.refine_events()
 
-        cols = ["period_id", "utc_timestamp", "object_id", "spadl_type", "start_x", "start_y", "outcome", "offside"]
-        return self.events[cols].copy().rename(columns={"object_id": "player_id"})
+        selected_cols = ["period_id", "utc_timestamp", "object_id", "spadl_type", "start_x", "start_y", "outcome"]
+        return self.events[selected_cols].copy().rename(columns={"object_id": "player_id", "outcome": "success"})
 
-    def format_traces_for_syncer(self) -> pd.DataFrame:
-        if "frame" not in self.traces.columns or "utc_timestamp" not in self.traces.columns:
+    def format_tracking_for_syncer(self) -> pd.DataFrame:
+        if "frame" not in self.tracking.columns or "utc_timestamp" not in self.tracking.columns:
             self.calculate_tracking_utc_timestamps()
 
-        home_players = [c[:-3] for c in self.traces.columns if fnmatch.fnmatch(c, "home_*_id")]
-        away_players = [c[:-3] for c in self.traces.columns if fnmatch.fnmatch(c, "away_*_id")]
+        home_players = [c[:-3] for c in self.tracking.columns if fnmatch.fnmatch(c, "home_*_id")]
+        away_players = [c[:-3] for c in self.tracking.columns if fnmatch.fnmatch(c, "away_*_id")]
         objects = home_players + away_players + ["ball"]
-        ret_list = []
+        tracking_list = []
 
         for p in objects:
-            object_traces = self.traces[["frame", "period_id", "timestamp", "utc_timestamp", "ball_state"]].copy()
+            object_tracking = self.tracking[["frame", "period_id", "timestamp", "utc_timestamp", "ball_state"]].copy()
 
             if p == "ball":
-                object_traces["player_id"] = None
-                object_traces["ball"] = True
+                object_tracking["player_id"] = None
+                object_tracking["ball"] = True
             else:
-                object_traces["player_id"] = p  # traces[f"{p}_id"]
-                object_traces["ball"] = False
+                object_tracking["player_id"] = p
+                object_tracking["ball"] = False
 
-            object_traces["x"] = self.traces[f"{p}_x"].values.round(2)
-            object_traces["y"] = self.traces[f"{p}_y"].values.round(2)
-            object_traces["z"] = self.traces["ball_z"].values.round(2) if p == "ball" else np.nan
+            object_tracking["x"] = self.tracking[f"{p}_x"].values.round(2)
+            object_tracking["y"] = self.tracking[f"{p}_y"].values.round(2)
+            object_tracking["z"] = self.tracking["ball_z"].values.round(2) if p == "ball" else np.nan
 
-            for i in object_traces["period_id"].unique():
-                period_traces = object_traces[object_traces["period_id"] == i].dropna(subset=["x"]).copy()
-                if not period_traces.empty:
-                    vx = savgol_filter(np.diff(period_traces["x"].values) * self.fps, window_length=15, polyorder=2)
-                    vy = savgol_filter(np.diff(period_traces["y"].values) * self.fps, window_length=15, polyorder=2)
+            for i in object_tracking["period_id"].unique():
+                period_tracking = object_tracking[object_tracking["period_id"] == i].dropna(subset=["x"]).copy()
+                if not period_tracking.empty:
+                    vx = savgol_filter(np.diff(period_tracking["x"].values) * self.fps, window_length=15, polyorder=2)
+                    vy = savgol_filter(np.diff(period_tracking["y"].values) * self.fps, window_length=15, polyorder=2)
                     speed = np.sqrt(vx**2 + vy**2)
-                    period_traces.loc[period_traces.index[1:], "speed"] = speed
-                    period_traces["speed"] = period_traces["speed"].bfill()
+                    period_tracking.loc[period_tracking.index[1:], "speed"] = speed
+                    period_tracking["speed"] = period_tracking["speed"].bfill()
 
                     accel = savgol_filter(np.diff(speed) * self.fps, window_length=9, polyorder=2)
-                    period_traces.loc[period_traces.index[1:-1], "accel_s"] = accel
-                    period_traces["accel_s"] = period_traces["accel_s"].bfill().ffill()
+                    period_tracking.loc[period_tracking.index[1:-1], "accel_s"] = accel
+                    period_tracking["accel_s"] = period_tracking["accel_s"].bfill().ffill()
 
                     ax = savgol_filter(np.diff(vx) * self.fps, window_length=9, polyorder=2)
                     ay = savgol_filter(np.diff(vy) * self.fps, window_length=9, polyorder=2)
-                    period_traces.loc[period_traces.index[1:-1], "accel_v"] = np.sqrt(ax**2 + ay**2)
-                    period_traces["accel_v"] = period_traces["accel_v"].bfill().ffill()
-                    ret_list.append(period_traces)
+                    period_tracking.loc[period_tracking.index[1:-1], "accel_v"] = np.sqrt(ax**2 + ay**2)
+                    period_tracking["accel_v"] = period_tracking["accel_v"].bfill().ffill()
+                    tracking_list.append(period_tracking)
 
-        ret = pd.concat(ret_list, ignore_index=True)
-        ret = ret[ret["ball_state"] == "alive"].drop("ball_state", axis=1).reset_index(drop=True)
-        return ret.astype({"period_id": int, "z": float})
+        out = pd.concat(tracking_list, ignore_index=True)
+        out = out[out["ball_state"] == "alive"].drop("ball_state", axis=1).reset_index(drop=True)
+        return out.astype({"period_id": int, "z": float})
 
 
 def find_spadl_event_types(events: pd.DataFrame, sort=True) -> pd.DataFrame:
@@ -175,7 +176,6 @@ def find_spadl_event_types(events: pd.DataFrame, sort=True) -> pd.DataFrame:
 
     # Foul and set-piece: foul, freekick_{crossed|short}, corner_{crossed|short}, goalkick
     is_foul = (events["action_type"] == "free_kick") & (events["free_kick_type"].isna() | events["penalty"])
-    # events.loc[is_foul & ~events["outcome"], "spadl_type"] = "foul"
     events.loc[is_foul, "spadl_type"] = "foul"
 
     is_freekick = (events["action_type"] == "free_kick") & events["free_kick_type"].notna()

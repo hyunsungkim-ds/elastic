@@ -107,7 +107,7 @@ class ReceiveDetector:
             # End of an episode (i.e., the game is paused after the event)
             return episode_last_frame, "out", None, None
 
-        elif event_type in shot_types and self.events.at[event_idx, "outcome"]:
+        elif event_type in shot_types and self.events.at[event_idx, "success"]:
             # Scoring a goal
             return episode_last_frame, "goal", None, None
 
@@ -127,7 +127,7 @@ class ReceiveDetector:
 
             players = [p for p in window["player_id"].unique() if p is not None]
             if event_type in pass_types:
-                if self.events.at[event_idx, "outcome"] or self.events.at[event_idx, "offside"]:
+                if self.events.at[event_idx, "success"]:
                     players = [p for p in players if p[:4] == passer[:4] and p != passer]  # Teammates are candidates
                 else:
                     players = [p for p in players if p[:4] != passer[:4]]  # Opponents are candidates

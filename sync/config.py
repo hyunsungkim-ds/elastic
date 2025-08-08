@@ -67,7 +67,7 @@ EVENT_COLS = [
     "player_name",
     "advanced_position",
     "spadl_type",
-    "outcome",
+    "success",
     "offside",
     "expected_goal",
 ]

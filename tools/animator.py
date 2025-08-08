@@ -491,7 +491,7 @@ if __name__ == "__main__":
 
         proc = Preprocessor(game_lineup, game_events, traces)
         proc.refine_events()
-        combined_traces = proc.merge_events_and_traces(ffill=True)
+        combined_traces = proc.merge_events_and_tracking(ffill=True)
 
     print("2. Animate selected trajectories")
     end_frame = combined_traces.index[-1] if args.end_frame == 0 else args.end_frame

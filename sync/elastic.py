@@ -217,7 +217,7 @@ class ELASTIC:
 
         elif not player_window.empty and event["spadl_type"] == "take_on":
             if (
-                not event["outcome"]
+                not event["success"]
                 and event["next_type"] == "tackle"
                 and next_player_id[:4] != player_id[:4]
                 and next_player_id in window["player_id"].unique()

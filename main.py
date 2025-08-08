@@ -49,7 +49,7 @@ if __name__ == "__main__":
         # Formatting the event and tracking data for the syncer
         proc = Preprocessor(game_lineup, game_events, traces)
         input_events = proc.format_events_for_syncer()
-        input_traces = proc.format_traces_for_syncer()
+        input_traces = proc.format_tracking_for_syncer()
 
         # Applying ELASTIC to synchronize the event and tracking data
         output_path = f"{config.OUTPUT_DIR}/{game_id}.csv"
