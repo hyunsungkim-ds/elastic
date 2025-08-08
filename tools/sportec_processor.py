@@ -118,13 +118,15 @@ class SportecProcessor:
                 player_id = play.attrib.get("Player")
                 receiver_id = None
                 result = None
-                success = play.find("SuccessfulShot")
+                success = True if play.find("SuccessfulShot") else False
 
                 if play.find("ShotWide") is not None:
                     result = "OffTarget"
                 elif play.find("SavedShot") is not None:
+                    receiver_id = play.find("SavedShot").attrib.get("GoalKeeper")
                     result = "Saved"
                 elif play.find("BlockedShot") is not None:
+                    receiver_id = play.find("BlockedShot").attrib.get("Player")
                     result = "Blocked"
                 elif play.find("ShotWoodWork") is not None:
                     result = "Post"
@@ -201,6 +203,7 @@ class SportecProcessor:
             elif child.tag == "TacklingGame":
                 team_id = child.attrib.get("WinnerTeam")
                 player_id = child.attrib.get("Winner")
+                receiver_id = child.attrib.get("Loser")
                 success = True
                 if child.attrib.get("PossessionChange") == "true":
                     result = "PossessionChange"
@@ -215,6 +218,18 @@ class SportecProcessor:
                 elif child.attrib.get("Type") == "BallClaimed":
                     event_type = "Recovery"
 
+            elif child.tag == "OtherBallAction":
+                if child.attrib.get("DefensiveClearance") == "true":
+                    event_type = "Clearance"
+                else:
+                    event_type = "OtherBallAction"
+
+            elif child.tag == "Foul":
+                team_id = child.attrib.get("TeamFouler")
+                player_id = child.attrib.get("Fouler")
+                receiver_id = child.attrib.get("Fouled")
+                result = child.attrib.get("FoulType")
+
             elif child.tag == "Caution":
                 event_type = "Card"
                 if child.attrib.get("CardColor") == "yellow":
@@ -222,11 +237,10 @@ class SportecProcessor:
                 elif child.attrib.get("CardColor") == "red":
                     card_type = "Red"
 
-            elif child.tag == "OtherBallAction":
-                if child.attrib.get("DefensiveClearance") == "true":
-                    event_type = "Clearance"
-                else:
-                    event_type = "OtherBallAction"
+            elif child.tag == "Substitution":
+                team_id = child.attrib.get("Team")
+                player_id = child.attrib.get("PlayerOut")
+                receiver_id = child.attrib.get("PlayerIn")
 
             event_rows.append(
                 {
@@ -249,92 +263,130 @@ class SportecProcessor:
                 }
             )
 
-        event_df = pd.DataFrame(event_rows)
-        event_df["datetime"] = pd.to_datetime(event_df["timestamp"]).dt.tz_localize(None)
-        event_df["timestamp"] = None
-        event_df.sort_values("datetime", ignore_index=True, inplace=True)
+        events = pd.DataFrame(event_rows)
+        events["datetime"] = pd.to_datetime(events["timestamp"]).dt.tz_localize(None)
+        events["timestamp"] = None
+        events.sort_values("datetime", ignore_index=True, inplace=True)
 
-        period_ids = [id for id in event_df["period_id"].unique() if id > 0]
+        period_ids = [id for id in events["period_id"].unique() if id > 0]
         for period_id in period_ids:
-            period_events = event_df[event_df["period_id"] == period_id].copy()
+            period_events = events[events["period_id"] == period_id].copy()
             start_idx = period_events[period_events["set_piece_type"] == "KickOff"].index[0]
             end_idx = period_events[period_events["event_type"] == "FinalWhistle"].index[-1]
 
-            start_dt = event_df.at[start_idx, "datetime"]
-            event_df.loc[start_idx:end_idx, "period_id"] = period_id
-            event_df.loc[start_idx:end_idx, "timestamp"] = event_df.loc[start_idx:end_idx, "datetime"] - start_dt
+            start_dt = events.at[start_idx, "datetime"]
+            events.loc[start_idx:end_idx, "period_id"] = period_id
+            events.loc[start_idx:end_idx, "timestamp"] = events.loc[start_idx:end_idx, "datetime"] - start_dt
 
-        return event_df.drop("datetime", axis=1)
+        events["timestamp"] = pd.to_timedelta(events["timestamp"])
+        return events.drop("datetime", axis=1)
 
-    def load_event_data(
-        self,
-        match_id: str,
-        player_df: pd.DataFrame,
-        filter_valid_actions=True,
-        find_object_ids=True,
-    ) -> pd.DataFrame:
-        # meta_path = self.get_meta_path(match_id)
-        event_path = self.get_event_path(match_id)
+    @staticmethod
+    def find_spadl_event_types(events: pd.DataFrame) -> pd.DataFrame:
+        events["spadl_type"] = None
 
-        print(f"Loading the event data for Match {match_id}...")
-        # event_ds = sportec.load_event(event_data=event_path, meta_data=meta_path)
-        # event_ds = event_ds.transform(to_orientation=Orientation.HOME_AWAY, to_pitch_dimensions=self.pitch_dims)
-        # event_df = event_ds.to_df().sort_values(["period_id", "timestamp"], ignore_index=True)
-        event_df = SportecProcessor.parse_event_data(event_path)
+        pass_mask = events["event_type"] == "Pass"
+        events.loc[pass_mask, "spadl_type"] = "pass"
+        events.loc[pass_mask & (events["set_piece_type"] == "ThrowIn"), "spadl_type"] = "throw_in"
+        events.loc[pass_mask & (events["set_piece_type"] == "GoalKick"), "spadl_type"] = "goalkick"
+        events.loc[pass_mask & (events["set_piece_type"] == "CornerKick"), "spadl_type"] = "corner_short"
+        events.loc[pass_mask & (events["set_piece_type"] == "FreeKick"), "spadl_type"] = "freekick_short"
 
-        events_list = []
+        cross_mask = events["event_type"] == "Cross"
+        events.loc[cross_mask, "spadl_type"] = "cross"
+        events.loc[cross_mask & (events["set_piece_type"] == "CornerKick"), "spadl_type"] = "corner_crossed"
+        events.loc[cross_mask & (events["set_piece_type"] == "FreeKick"), "spadl_type"] = "freekick_crossed"
 
-        for period_id in event_df["period_id"].unique():
-            period_events = event_df[event_df["period_id"] == period_id]
-            kickoffs = period_events[period_events["set_piece_type"] == "KICK_OFF"]
-            if not kickoffs.empty:
-                period_events = period_events.loc[kickoffs.index[0] :]
-            events_list.append(period_events)
+        shot_mask = events["event_type"] == "Shot"
+        events.loc[shot_mask, "spadl_type"] = "shot"
+        events.loc[shot_mask & (events["set_piece_type"] == "FreeKick"), "spadl_type"] = "shot_freekick"
+        events.loc[shot_mask & (events["set_piece_type"] == "Penalty"), "spadl_type"] = "shot_penalty"
 
-        event_df = pd.concat(events_list, ignore_index=True)
+        events.loc[events["event_type"] == "Interception", "spadl_type"] = "interception"
+        events.loc[events["event_type"] == "Recovery", "spadl_type"] = "recovery"
+        events.loc[events["event_type"] == "Clearance", "spadl_type"] = "clearance"
+        events.loc[events["event_type"] == "Foul", "spadl_type"] = "foul"
 
-        if filter_valid_actions:
-            drop_types = [
-                "Delete",
-                # "TacklingGame",
-                # "SitterPrevented",
-                # "SpectacularPlay",
-                # "PenaltyNotAwarded",
-                "VideoAssistantAction",
-                "RefereeBall",
-                "Card",
-                "Substitution",
-            ]
-            event_df = event_df[~event_df["event_type"].isin(drop_types)].copy()
+        for i in events[events["event_type"] == "OtherBallAction"].index:
+            team_id = events.at[i, "team_id"]
+            player_id = events.at[i, "player_id"]
+            recent_action = events[~events["event_type"].str.contains("Duel")].loc[: i - 1].iloc[-1]
 
-            # ball_out_mask = (event_df["event_type"].shift(-1) == "BALL_OUT") & (event_df["result"].isna())
-            # event_df.loc[ball_out_mask, "result"] = "OUT"
-            # event_df.loc[event_df["event_type"].shift(-1) == "Offside", "result"] = "OFFSIDE"
-            # event_df = event_df[~event_df["event_type"].isin(["BALL_OUT", "Offside"])]
-            # event_df = event_df.reset_index(drop=True).copy()
+            if recent_action["receiver_player_id"] == player_id:
+                if recent_action["event_type"] in ["Pass", "Cross"] and not recent_action["success"]:
+                    events.at[i, "spadl_type"] = "interception"
+                    continue
 
-        if find_object_ids:
-            player_mapping = player_df.set_index("player_id")["object_id"].to_dict()
-            event_df["object_id"] = event_df["player_id"].map(player_mapping)
-            event_df["receiver_id"] = event_df["receiver_player_id"].map(player_mapping)
-            event_df.loc[event_df["event_type"] == "VideoAssistantAction", "object_id"] = "referee"
-            event_df.loc[event_df["event_type"] == "RefereeBall", "object_id"] = "referee"
-            event_df.loc[event_df["event_type"] == "PenaltyNotAwarded", "object_id"] = "referee"
+                elif recent_action["event_type"] == "Shot" and not recent_action["success"]:
+                    events.at[i, "spadl_type"] = "shot_block"
+                    continue
 
-        return event_df
+                # If the player is not involved in adjoining ground duels and he/she loses possession
+                adj_duels = events[events["event_type"] == "GroundDuel"].loc[i - 1 : i + 2]
+                if player_id not in adj_duels["player_id"].tolist() + adj_duels["receiver_player_id"].tolist():
+                    if events.at[i + 1, "player_id"] != player_id:
+                        events.at[i, "spadl_type"] = "bad_touch"
+                        continue
 
-    def load_tracking_data(self, match_id: str, player_df: pd.DataFrame) -> Tuple[TrackingDataset, pd.DataFrame]:
+            if recent_action["event_type"] == "Clearance":
+                events.at[i, "spadl_type"] = "recovery"
+
+            if events.at[i + 1, "event_type"] == "GroundDuel":
+                duel_winner_id = events.at[i + 1, "player_id"]
+                duel_loser_id = events.at[i + 1, "receiver_player_id"]
+
+                # If the player is the winner of the following ground duel
+                if duel_winner_id == player_id:
+                    prev_player_id = events.at[i - 1, "player_id"]
+                    prev_event_type = events.at[i - 1, "event_type"]
+
+                    if prev_event_type == "OtherBallAction" and duel_loser_id == prev_player_id:
+                        events.at[i - 1, "spadl_type"] = "dispossessed"
+                        events.at[i, "spadl_type"] = "tackle"
+                        continue
+
+                    elif recent_action["team_id"] != team_id:
+                        events.at[i, "spadl_type"] = "tackle"
+                        continue
+
+                # If the player is the loser of the following ground duel
+                if duel_loser_id == player_id:
+                    events.at[i, "spadl_type"] = "dispossessed"
+                    continue
+
+            if events.at[i - 1, "event_type"] == "GroundDuel":
+                duel_winner_id = events.at[i - 1, "player_id"]
+                duel_loser_id = events.at[i - 1, "receiver_player_id"]
+
+                # If the player is the winner of the previous ground duel
+                if duel_winner_id == player_id or duel_loser_id == player_id:
+                    events.at[i, "spadl_type"] = "tackle"
+
+        return events
+
+    @staticmethod
+    def format_events_for_syncer(events: pd.DataFrame, player_df: pd.DataFrame) -> pd.DataFrame:
+        player_mapping = player_df.set_index("player_id")["object_id"].to_dict()
+        events["object_id"] = events["player_id"].map(player_mapping)
+        events["receiver_id"] = events["receiver_player_id"].map(player_mapping)
+        events = SportecProcessor.find_spadl_event_types(events)
+
+        selected_cols = ["period_id", "timestamp", "object_id", "spadl_type", "success"]
+        input_events = events.loc[events["spadl_type"].notna(), selected_cols].copy()
+        return input_events.rename(columns={"object_id": "player_id"})
+
+    def load_tracking_data(self, match_id: str, player_ds: pd.DataFrame) -> Tuple[TrackingDataset, pd.DataFrame]:
         meta_path = self.get_meta_path(match_id)
         tracking_path = self.get_tracking_path(match_id)
 
         print(f"Loading the tracking data for Match {match_id}")
         tracking_ds = sportec.load_tracking(raw_data=tracking_path, meta_data=meta_path, only_alive=False)
 
-        print("Transforming the tracking data coordinates...")
+        print("Transforming the tracking data coordinates")
         tracking_ds = tracking_ds.transform(to_orientation=Orientation.HOME_AWAY, to_pitch_dimensions=self.pitch_dims)
 
         tracking_df: pd.DataFrame = tracking_ds.to_df()
-        player_mapping = player_df.set_index("player_id")["object_id"].to_dict()
+        player_mapping = player_ds.set_index("player_id")["object_id"].to_dict()
         column_mapping = {f"{k}_{t}": f"{v}_{t}" for k, v in player_mapping.items() for t in ["x", "y", "d", "s"]}
         tracking_df = tracking_df.rename(columns=column_mapping)
 
@@ -342,35 +394,3 @@ class SportecProcessor:
         tracking_df = tracking_df.dropna(subset=player_x_cols, how="all").copy()
 
         return tracking_ds, tracking_df
-
-    @staticmethod
-    def find_spadl_event_types(event_df: pd.DataFrame) -> pd.DataFrame:
-        event_df["spadl_type"] = None
-
-        # NOTE: In the current version of Sportec Open Data, both passes and crosses are annotated as PASS
-        pass_mask = event_df["event_type"] == "PASS"
-        event_df.loc[pass_mask, "spadl_type"] = "pass"
-        event_df.loc[pass_mask & (event_df["set_piece_type"] == "THROW_IN"), "spadl_type"] = "throw_in"
-        event_df.loc[pass_mask & (event_df["set_piece_type"] == "GOAL_KICK"), "spadl_type"] = "goalkick"
-        event_df.loc[pass_mask & (event_df["set_piece_type"] == "CORNER_KICK"), "spadl_type"] = "corner_short"
-        event_df.loc[pass_mask & (event_df["set_piece_type"] == "FREE_KICK"), "spadl_type"] = "freekick_short"
-
-        cross_mask = event_df["event_type"] == "CROSS"
-        event_df.loc[cross_mask, "spadl_type"] = "cross"
-        event_df.loc[cross_mask & (event_df["set_piece_type"] == "CORNER_KICK"), "spadl_type"] = "corner_crossed"
-        event_df.loc[cross_mask & (event_df["set_piece_type"] == "FREE_KICK"), "spadl_type"] = "freekick_crossed"
-
-        shot_mask = event_df["event_type"] == "SHOT"
-        event_df.loc[shot_mask, "spadl_type"] = "shot"
-        event_df.loc[shot_mask & (event_df["set_piece_type"] == "FREE_KICK"), "spadl_type"] = "shot_freekick"
-        event_df.loc[shot_mask & (event_df["set_piece_type"] == "PENALTY"), "spadl_type"] = "shot_penalty"
-
-        event_df.loc[event_df["event_type"] == "RECOVERY", "spadl_type"] = "ball_recovery"
-
-        # NOTE: In the current version of Sportec Open Data,
-        # GENERIC:OtherBallAction is a mixture of multiple defensive action categories,
-        # including interception, tackle, clearance, and so on.
-        event_df.loc[event_df["event_type"] == "GENERIC:OtherBallAction", "spadl_type"] = "bad_touch"
-        event_df.loc[event_df["event_type"] == "FOUL_COMMITTED", "spadl_type"] = "foul"
-
-        return event_df
