@@ -14,7 +14,8 @@ from matplotlib import animation, axes, collections, lines, text
 from matplotlib.patches import Rectangle
 
 import tools.matplotsoccer as mps
-from tools.preprocessor import Preprocessor, find_spadl_event_types
+from tools.data_utils import merge_events_and_tracking
+from tools.stats_perform_data import StatsPerformData, find_spadl_event_types
 
 anim_config = {
     "sports": "soccer",  # soccer or basketball
@@ -418,7 +419,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--file_index", type=int, default=None)
-    parser.add_argument("--game_id", type=str, default=None)
+    parser.add_argument("--match_id", type=str, default=None)
     parser.add_argument("--load_preprocessed", action="store_true", default=False)
     parser.add_argument("--show_events", action="store_true", default=False)
     parser.add_argument("--start_frame", type=int, default=0)
@@ -431,26 +432,26 @@ if __name__ == "__main__":
     trace_files = np.sort([f for f in os.listdir("data/ajax/tracking") if f.endswith(".parquet")])
 
     if args.file_index is None:
-        assert args.game_id is not None
-        game_id = args.game_id
-        file_index = np.where(trace_files == f"{game_id}.parquet")[0][0]
+        assert args.match_id is not None
+        match_id = args.match_id
+        file_index = np.where(trace_files == f"{match_id}.parquet")[0][0]
 
-    elif args.game_id is None:
+    elif args.match_id is None:
         assert args.file_index is not None
         file_index = args.file_index
-        game_id = trace_files[file_index].split(".")[0]
+        match_id = trace_files[file_index].split(".")[0]
 
     if args.load_preprocessed:
-        game_events = pd.read_csv(f"data/ajax/event_processed/{game_id}.csv", header=0)
-        traces = pd.read_parquet(f"data/ajax/tracking_processed/{game_id}.parquet")
+        match_events = pd.read_csv(f"data/ajax/event_processed/{match_id}.csv", header=0)
+        tracking = pd.read_parquet(f"data/ajax/tracking_processed/{match_id}.parquet")
 
         print("1. Load the preprocessed event data and merge it with the tracking data")
         receive_events = []
 
-        for i in game_events.index:
-            event = game_events.loc[i]
+        for i in match_events.index:
+            event = match_events.loc[i]
             receive_frame = event["receive_frame"]
-            next_frame = np.inf if i == game_events.index[-1] else game_events.at[i + 1, "frame"]
+            next_frame = np.inf if i == match_events.index[-1] else match_events.at[i + 1, "frame"]
 
             if pd.notna(receive_frame) and receive_frame < next_frame:
                 receive_events.append(
@@ -465,17 +466,17 @@ if __name__ == "__main__":
                 )
 
         event_cols = ["utc_timestamp", "period_id", "frame", "player_id", "spadl_type"]
-        aug_events = pd.concat([game_events, pd.DataFrame(receive_events)])[event_cols]
+        aug_events = pd.concat([match_events, pd.DataFrame(receive_events)])[event_cols]
 
         aug_events = aug_events.dropna(subset="frame").sort_values(["frame", "utc_timestamp"], ignore_index=True)
         aug_events["frame"] = aug_events["frame"].astype(int)
         aug_events = aug_events[~aug_events.duplicated(subset="frame", keep="first")].drop("utc_timestamp", axis=1)
-        aug_events["event_x"] = aug_events.apply(lambda e: traces.at[e["frame"], "ball_x"], axis=1)
-        aug_events["event_y"] = aug_events.apply(lambda e: traces.at[e["frame"], "ball_y"], axis=1)
+        aug_events["event_x"] = aug_events.apply(lambda e: tracking.at[e["frame"], "ball_x"], axis=1)
+        aug_events["event_y"] = aug_events.apply(lambda e: tracking.at[e["frame"], "ball_y"], axis=1)
         aug_events.columns = ["period_id", "frame", "event_player", "event_type", "event_x", "event_y"]
 
-        combined_traces = pd.merge(aug_events, traces.reset_index(), how="right").set_index("frame")
-        combined_traces[aug_events.columns[2:]] = combined_traces[aug_events.columns[2:]].ffill()
+        merged_df = pd.merge(aug_events, tracking.reset_index(), how="right").set_index("frame")
+        merged_df[aug_events.columns[2:]] = merged_df[aug_events.columns[2:]].ffill()
 
     else:
         lineups = pd.read_parquet("data/ajax/lineup/line_up.parquet")
@@ -485,16 +486,16 @@ if __name__ == "__main__":
 
         print("1. Preprocess the event data and merge it with the tracking data")
         events = find_spadl_event_types(events)
-        game_lineup = lineups.loc[lineups["stats_perform_match_id"] == game_id].set_index("player_id")
-        game_events = events[(events["stats_perform_match_id"] == game_id) & (events["spadl_type"].notna())].copy()
-        traces = pd.read_parquet(f"data/ajax/tracking/{game_id}.parquet")
+        match_lineup = lineups.loc[lineups["stats_perform_match_id"] == match_id].set_index("player_id")
+        match_events = events[(events["stats_perform_match_id"] == match_id) & (events["spadl_type"].notna())].copy()
+        tracking = pd.read_parquet(f"data/ajax/tracking/{match_id}.parquet")
 
-        proc = Preprocessor(game_lineup, game_events, traces)
-        proc.refine_events()
-        combined_traces = proc.merge_events_and_tracking(ffill=True)
+        match = StatsPerformData(match_lineup, match_events, tracking)
+        match.refine_events()
+        merged_df = merge_events_and_tracking(events, tracking, ffill=True)
 
     print("2. Animate selected trajectories")
-    end_frame = combined_traces.index[-1] if args.end_frame == 0 else args.end_frame
+    end_frame = merged_df.index[-1] if args.end_frame == 0 else args.end_frame
     break_frames = np.arange(args.start_frame, end_frame, args.segment_size)
 
     sampled_fps = round(args.fps / args.step_size, 1)
@@ -508,8 +509,8 @@ if __name__ == "__main__":
         f_to = break_frames[i + 1] if i < len(break_frames) - 1 else end_frame
         print(f"Frames from {f_from} to {f_to}...")
 
-        segment_traces = combined_traces.loc[f_from : f_to : args.step_size].copy()
-        animator = Animator({"main": segment_traces}, show_times=True, show_events=args.show_events)
+        segment_df = merged_df.loc[f_from : f_to : args.step_size].copy()
+        animator = Animator({"main": segment_df}, show_times=True, show_events=args.show_events)
         anim = animator.run()
 
         anim_path = f"animations/{file_index:03d}_{f_from}-{f_to}_fps{sampled_fps}.mp4"
