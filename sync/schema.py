@@ -43,7 +43,7 @@ synced_event_schema = DataFrameSchema(
 
 tracking_schema = DataFrameSchema(
     {
-        "frame": Column(int, Check(lambda s: s >= 0)),
+        "frame_id": Column(int, Check(lambda s: s >= 0)),
         "period_id": Column(int, Check(lambda s: s.isin([1, 2]))),
         "timestamp": Column(float),
         "utc_timestamp": Column(np.dtype("datetime64[ns]")),

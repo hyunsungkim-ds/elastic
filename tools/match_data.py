@@ -59,16 +59,16 @@ class MatchData(ABC):
     def format_tracking_for_syncer(self) -> pd.DataFrame:
         tracking = self.tracking.copy()
 
-        if "frame" not in tracking.columns or "utc_timestamp" not in tracking.columns:
+        if "frame_id" not in tracking.columns or "utc_timestamp" not in tracking.columns:
             tracking = MatchData.calculate_tracking_datetimes(self.events, tracking, self.fps)
 
-        home_players = [c[:-3] for c in tracking.columns if fnmatch.fnmatch(c, "home_*_id")]
-        away_players = [c[:-3] for c in tracking.columns if fnmatch.fnmatch(c, "away_*_id")]
+        home_players = [c[:-2] for c in tracking.columns if fnmatch.fnmatch(c, "home_*_x")]
+        away_players = [c[:-2] for c in tracking.columns if fnmatch.fnmatch(c, "away_*_x")]
         objects = home_players + away_players + ["ball"]
         tracking_list = []
 
         for p in objects:
-            object_tracking = tracking[["frame", "period_id", "timestamp", "utc_timestamp", "ball_state"]].copy()
+            object_tracking = tracking[["frame_id", "period_id", "timestamp", "utc_timestamp", "ball_state"]].copy()
 
             if p == "ball":
                 object_tracking["player_id"] = None

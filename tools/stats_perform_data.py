@@ -104,8 +104,16 @@ class StatsPerformData(MatchData):
         if "timestamp" not in self.events.columns or "object_id" not in self.events.columns:
             self.refine_events()
 
-        selected_cols = ["period_id", "utc_timestamp", "object_id", "spadl_type", "start_x", "start_y", "outcome"]
-        return self.events[selected_cols].copy().rename(columns={"object_id": "player_id", "outcome": "success"})
+        column_mapping = {
+            "period_id": "period_id",
+            "utc_timestamp": "utc_timestamp",
+            "object_id": "player_id",
+            "spadl_type": "spadl_type",
+            "start_x": "start_x",
+            "start_y": "start_y",
+            "outcome": "success",
+        }
+        return self.events[column_mapping.keys()].copy().rename(columns=column_mapping)
 
 
 def find_spadl_event_types(events: pd.DataFrame, sort=True) -> pd.DataFrame:

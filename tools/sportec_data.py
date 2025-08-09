@@ -125,7 +125,7 @@ class SportecData(MatchData):
                 player_id = play.attrib.get("Player")
                 receiver_id = None
                 result = None
-                success = True if play.find("SuccessfulShot") else False
+                success = play.find("SuccessfulShot") is not None
 
                 if play.find("ShotWide") is not None:
                     result = "OffTarget"
@@ -369,7 +369,7 @@ class SportecData(MatchData):
         events.loc[shot_mask & (events["set_piece_type"] == "Penalty"), "spadl_type"] = "shot_penalty"
 
         events.loc[events["event_type"] == "Interception", "spadl_type"] = "interception"
-        events.loc[events["event_type"] == "Recovery", "spadl_type"] = "recovery"
+        events.loc[events["event_type"] == "Recovery", "spadl_type"] = "ball_recovery"
         events.loc[events["event_type"] == "Clearance", "spadl_type"] = "clearance"
         events.loc[events["event_type"] == "Foul", "spadl_type"] = "foul"
 
@@ -395,7 +395,7 @@ class SportecData(MatchData):
                         continue
 
             if recent_action["event_type"] == "Clearance":
-                events.at[i, "spadl_type"] = "recovery"
+                events.at[i, "spadl_type"] = "ball_recovery"
 
             if events.at[i + 1, "event_type"] == "GroundDuel":
                 duel_winner_id = events.at[i + 1, "player_id"]
@@ -428,26 +428,46 @@ class SportecData(MatchData):
                 if duel_winner_id == player_id or duel_loser_id == player_id:
                     events.at[i, "spadl_type"] = "tackle"
 
+        always_success = ["interception", "tackle", "dispossessed", "ball_recovery", "shot_block"]
+        always_failure = ["foul"]
+        receiver_dependent = ["clearance", "bad_touch"]
+
+        events.loc[events["spadl_type"].isin(always_success), "success"] = True
+        events.loc[events["spadl_type"].isin(always_failure), "success"] = False
+
+        dependent_events = events[events["spadl_type"].isin(receiver_dependent)].copy()
+        spadl_events = events[events["spadl_type"].notna()].copy()
+
+        for i in dependent_events.index:
+            if i == events.index[-1]:
+                events.at[i, "success"] = False
+
+            else:
+                period_id = events.at[i, "period_id"]
+                team_id = events.at[i, "team_id"]
+                next_event = spadl_events.loc[i + 1 :].iloc[0]
+                events.at[i, "success"] = next_event["period_id"] == period_id and next_event["team_id"] == team_id
+
         return events
 
     def format_events_for_syncer(self) -> pd.DataFrame:
         events = SportecData.find_object_ids(self.lineup, self.events)
         events = SportecData.find_spadl_event_types(events)
 
-        selected_cols = [
-            "period_id",
-            "utc_timestamp",
-            "object_id",
-            "spadl_type",
-            "coordinates_x",
-            "coordinates_y",
-            "success",
-        ]
-        input_events = events.loc[events["spadl_type"].notna(), selected_cols].copy()
-        input_events.columns = selected_cols[:2] + ["player_id", "event_type", "start_x", "start_y", "success"]
+        column_mapping = {
+            "period_id": "period_id",
+            "utc_timestamp": "utc_timestamp",
+            "object_id": "player_id",
+            "spadl_type": "spadl_type",
+            "coordinates_x": "start_x",
+            "coordinates_y": "start_y",
+            "success": "success",
+        }
+        input_events = events.loc[events["spadl_type"].notna(), column_mapping.keys()].copy().reset_index(drop=True)
 
-        return input_events
+        return input_events.rename(columns=column_mapping).astype({"success": bool})
 
+    @staticmethod
     def merge_events_and_tracking(
         lineup: pd.DataFrame,
         events: pd.DataFrame,

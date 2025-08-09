@@ -49,8 +49,8 @@ class ELASTIC:
         self.pre_sync_types = list(set(config.SPADL_TYPES) - set(self.post_sync_types))
 
         # Define an episode as a sequence of consecutive in-play frames
-        time_cols = ["frame", "period_id", "timestamp", "utc_timestamp"]
-        self.frames = self.tracking[time_cols].drop_duplicates().sort_values("frame").set_index("frame")
+        time_cols = ["frame_id", "period_id", "timestamp", "utc_timestamp"]
+        self.frames = self.tracking[time_cols].drop_duplicates().sort_values("frame_id").set_index("frame_id")
         self.frames["timestamp"] = self.frames["timestamp"].apply(utils.format_timestamp)
         self.frames["episode_id"] = 0
         n_prev_episodes = 0
@@ -83,12 +83,12 @@ class ELASTIC:
         if kickoff_event["spadl_type"] != "pass":
             raise Exception("First event is not a pass!")
 
-        frame = self.tracking.loc[self.tracking["period_id"] == period, "frame"].min()
+        frame = self.tracking.loc[self.tracking["period_id"] == period, "frame_id"].min()
         frames_to_check = np.arange(frame, frame + self.fps * config.TIME_KICKOFF)
         kickoff_player = kickoff_event["player_id"]
 
         inside_center_circle = self.tracking[
-            (self.tracking["frame"] == frame)
+            (self.tracking["frame_id"] == frame)
             & (self.tracking["player_id"].str.startswith(kickoff_player.split("_")[0]))
             & (self.tracking["x"] >= config.PITCH_X / 2 - 5)
             & (self.tracking["x"] <= config.PITCH_X / 2 + 5)
@@ -100,7 +100,7 @@ class ELASTIC:
             raise ValueError
 
         ball_window: pd.DataFrame = self.tracking[
-            (self.tracking["frame"].isin(frames_to_check))
+            (self.tracking["frame_id"].isin(frames_to_check))
             & (self.tracking["period_id"] == period)
             & self.tracking["ball"]
             & (self.tracking["x"] >= config.PITCH_X / 2 - 3)
@@ -108,18 +108,18 @@ class ELASTIC:
             & (self.tracking["y"] >= config.PITCH_Y / 2 - 3)
             & (self.tracking["y"] <= config.PITCH_Y / 2 + 3)
         ]
-        ball_window = ball_window[(ball_window["frame"].diff() > 1).astype(int).cumsum() < 1].set_index("frame")
+        ball_window = ball_window[(ball_window["frame_id"].diff() > 1).astype(int).cumsum() < 1].set_index("frame_id")
 
         if ball_window.empty:
             print("The tracking data begins after kickoff!")
             raise ValueError
 
         player_window: pd.DataFrame = self.tracking[
-            (self.tracking["frame"].isin(frames_to_check))
+            (self.tracking["frame_id"].isin(frames_to_check))
             & (self.tracking["period_id"] == period)
             & (self.tracking["player_id"] == kickoff_player)
         ]
-        player_window = player_window.set_index("frame").loc[ball_window.index]
+        player_window = player_window.set_index("frame_id").loc[ball_window.index]
 
         player_x = player_window["x"].values
         player_y = player_window["y"].values
@@ -133,7 +133,7 @@ class ELASTIC:
         else:
             best_idx = ball_window["accel_v"].values[dist_idxs].argmax()
 
-        return player_window.reset_index()["frame"].iloc[best_idx]
+        return player_window.reset_index()["frame_id"].iloc[best_idx]
 
     def _window_of_frames(
         self, event: pd.Series, s: int = 5, min_frame: int = 0, max_frame: int = np.inf
@@ -202,16 +202,16 @@ class ELASTIC:
 
         # Select all player and ball frames within window range
         cand_frames = [t for t in cand_frames if t >= min_frame and t <= max_frame]
-        window = self.tracking[self.tracking["frame"].isin(cand_frames)].copy()
-        player_window: pd.DataFrame = window[window["player_id"] == player_id].set_index("frame")
-        ball_window: pd.DataFrame = window[window["ball"]].set_index("frame")
+        window = self.tracking[self.tracking["frame_id"].isin(cand_frames)].copy()
+        player_window: pd.DataFrame = window[window["player_id"] == player_id].set_index("frame_id")
+        ball_window: pd.DataFrame = window[window["ball"]].set_index("frame_id")
 
         prev_player_id = self.events.at[event.name - 1, "player_id"]
         next_player_id = player_id if pd.isna(event["next_player_id"]) else event["next_player_id"]
 
         if not player_window.empty and event["spadl_type"] == "tackle" and prev_player_id[:4] != player_id[:4]:
             if prev_player_id in window["player_id"].unique():
-                oppo_window = window[window["player_id"] == prev_player_id].set_index("frame").copy()
+                oppo_window = window[window["player_id"] == prev_player_id].set_index("frame_id").copy()
             else:
                 oppo_window = None
 
@@ -222,7 +222,7 @@ class ELASTIC:
                 and next_player_id[:4] != player_id[:4]
                 and next_player_id in window["player_id"].unique()
             ):
-                oppo_window = window[window["player_id"] == next_player_id].set_index("frame").copy()
+                oppo_window = window[window["player_id"] == next_player_id].set_index("frame_id").copy()
 
             else:
                 # Find the closest player among the opponents closer than the event player to the target goal
@@ -230,8 +230,8 @@ class ELASTIC:
                 goal_y = config.PITCH_Y / 2
 
                 opponents = [p for p in window["player_id"].unique() if p is not None and p[:4] != player_id[:4]]
-                oppo_x = window[window["player_id"].isin(opponents)].pivot_table("x", "frame", "player_id", "first")
-                oppo_y = window[window["player_id"].isin(opponents)].pivot_table("y", "frame", "player_id", "first")
+                oppo_x = window[window["player_id"].isin(opponents)].pivot_table("x", "frame_id", "player_id", "first")
+                oppo_y = window[window["player_id"].isin(opponents)].pivot_table("y", "frame_id", "player_id", "first")
 
                 oppo_dist_x = oppo_x.values - player_window[["x"]].values
                 oppo_dist_y = oppo_y.values - player_window[["y"]].values
@@ -247,12 +247,12 @@ class ELASTIC:
 
                 closest_rows = []
                 for i, frame in enumerate(oppo_x.index):
-                    row = window[(window["frame"] == frame) & (window["player_id"] == closest_opponents[i])]
+                    row = window[(window["frame_id"] == frame) & (window["player_id"] == closest_opponents[i])]
                     if not row.empty:
                         closest_rows.append(row)
 
                 if closest_rows:
-                    oppo_window = pd.concat(closest_rows).set_index("frame")
+                    oppo_window = pd.concat(closest_rows).set_index("frame_id")
                 else:
                     oppo_window = None
 
@@ -648,7 +648,7 @@ class ELASTIC:
         if minor_events.empty:
             return
 
-        self.events.loc[minor_events.index, "frame"] = np.nan
+        self.events.loc[minor_events.index, "frame_id"] = np.nan
         self.matched_frames.loc[minor_events.index] = np.nan
 
         for i in tqdm(minor_events.index, desc="Post-syncing minor events"):
@@ -735,7 +735,7 @@ class ELASTIC:
             # STEP 2: Major event synchronization for the current period
             self._sync_major_events(period)
 
-        self.events["frame"] = self.matched_frames
+        self.events["frame_id"] = self.matched_frames
 
         # STEP 3: Receive detection
         self.receive_det = ReceiveDetector(self.events, self.tracking)
@@ -745,8 +745,8 @@ class ELASTIC:
         # STEP 4: Minor event synchronization
         self._sync_minor_events()
 
-        self.events["frame"] = self.matched_frames
-        self.events["synced_ts"] = self.events["frame"].map(self.frames["timestamp"].to_dict())
+        self.events["frame_id"] = self.matched_frames
+        self.events["synced_ts"] = self.events["frame_id"].map(self.frames["timestamp"].to_dict())
         self.events["receive_ts"] = self.events["receive_frame"].map(self.frames["timestamp"].to_dict())
 
     def plot_window_features(self, event_idx: int, display_title: bool = True, save_path: str = None) -> pd.DataFrame:
@@ -793,7 +793,7 @@ class ELASTIC:
         else:
             period_id = self.events.at[event_idx, "period_id"]
             period_events = self.events[self.events["period_id"] == period_id]
-            kickoff_frame = period_events["frame"].iloc[0]
+            kickoff_frame = period_events["frame_id"].iloc[0]
             kickoff_ts = period_events["utc_timestamp"].iloc[0]
 
             recorded_ts = self.events.at[event_idx, "utc_timestamp"]
