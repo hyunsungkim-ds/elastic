@@ -25,7 +25,7 @@ class MatchData(ABC):
             start_dt = period_events["utc_timestamp"].iloc[0]
             period_tds = period_events["utc_timestamp"] - start_dt
             events.loc[period_events.index, "timestamp"] = period_tds.dt.total_seconds()
-            events.loc[period_events.index, "utc_timestamp"] -= timedelta(microseconds=start_dt.microsecond)
+            # events.loc[period_events.index, "utc_timestamp"] -= timedelta(microseconds=start_dt.microsecond)
 
         return events
 

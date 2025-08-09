@@ -26,7 +26,7 @@ class ReceiveDetector:
         self.events = events.copy()
 
         pass_like = config.PASS_LIKE_OPEN + config.SET_PIECE  # + ["interception"]
-        self.passes = self.events[self.events["spadl_type"].isin(pass_like) & self.events["frame"].notna()].copy()
+        self.passes = self.events[self.events["spadl_type"].isin(pass_like) & self.events["frame_id"].notna()].copy()
 
         self.tracking = tracking
         self.players = self.tracking["player_id"].dropna().unique()
@@ -34,8 +34,8 @@ class ReceiveDetector:
         self.fps = fps
 
         # Define an episode as a sequence of consecutive in-play frames
-        time_cols = ["frame", "period_id", "timestamp", "utc_timestamp"]
-        self.frames = self.tracking[time_cols].drop_duplicates().sort_values("frame").set_index("frame")
+        time_cols = ["frame_id", "period_id", "timestamp", "utc_timestamp"]
+        self.frames = self.tracking[time_cols].drop_duplicates().sort_values("frame_id").set_index("frame_id")
         self.frames["timestamp"] = self.frames["timestamp"].apply(utils.format_timestamp)
         self.frames["episode_id"] = 0
         n_prev_episodes = 0
@@ -83,7 +83,7 @@ class ReceiveDetector:
             return cand_features["score"].idxmax(), cand_features
 
     def _detect_receive(self, event_idx: int, s: float = 10) -> Tuple[float, str, pd.DataFrame, pd.DataFrame]:
-        pass_frame = self.events.at[event_idx, "frame"]
+        pass_frame = self.events.at[event_idx, "frame_id"]
 
         episode_id = self.frames.at[pass_frame, "episode_id"]
         episode_last_frame = float(self.frames[self.frames["episode_id"] == episode_id].index[-1])
@@ -94,7 +94,7 @@ class ReceiveDetector:
         pass_types = ["pass", "cross", "freekick_crossed", "freekick_short"] + config.SET_PIECE_OOP
 
         next_type = self.events.at[event_idx, "next_type"]
-        next_event_frame = self.events.loc[event_idx + 1 :, "frame"].dropna().min()
+        next_event_frame = self.events.loc[event_idx + 1 :, "frame_id"].dropna().min()
 
         if not pd.isna(next_event_frame):
             max_frame = min(max_frame, next_event_frame)
@@ -120,7 +120,7 @@ class ReceiveDetector:
             return max_frame, self.events.at[event_idx, "next_player_id"], None, None
 
         else:
-            window = self.tracking[(self.tracking["frame"] >= pass_frame) & (self.tracking["frame"] <= max_frame)]
+            window = self.tracking[(self.tracking["frame_id"] >= pass_frame) & (self.tracking["frame_id"] <= max_frame)]
 
             passer = self.events.at[event_idx, "player_id"]
             next_player = self.events.at[event_idx, "next_player_id"]
@@ -132,8 +132,8 @@ class ReceiveDetector:
                 else:
                     players = [p for p in players if p[:4] != passer[:4]]  # Opponents are candidates
 
-            player_x = window[window["player_id"].isin(players)].pivot_table("x", "frame", "player_id", "first")
-            player_y = window[window["player_id"].isin(players)].pivot_table("y", "frame", "player_id", "first")
+            player_x = window[window["player_id"].isin(players)].pivot_table("x", "frame_id", "player_id", "first")
+            player_y = window[window["player_id"].isin(players)].pivot_table("y", "frame_id", "player_id", "first")
             ball_window = window[window["ball"]]
 
             features = pd.DataFrame(index=player_x.index)
@@ -221,6 +221,7 @@ class ReceiveDetector:
 
             plt.legend(loc="upper right", fontsize=15)
             plt.grid(axis="y")
+            plt.xticks(rotation=45)
 
             if display_title:
                 plt.title(f"receive at frame {int(best_frame)}")

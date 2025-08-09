@@ -32,7 +32,7 @@ synced_event_schema = DataFrameSchema(
     {
         "period_id": Column(int, Check(lambda s: s.isin([1, 2]))),
         "utc_timestamp": Column(np.dtype("datetime64[ns]")),
-        "frame": Column(float, Check(lambda s: (s >= 0) & (round(s) == s)), nullable=True),
+        "frame_id": Column(float, Check(lambda s: (s >= 0) & (round(s) == s)), nullable=True),
         "player_id": Column(object),
         "spadl_type": Column(str, Check(lambda s: s.isin(config.SPADL_TYPES))),
         "success": Column(bool),

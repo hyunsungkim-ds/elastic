@@ -206,7 +206,7 @@ class ELASTIC:
         player_window: pd.DataFrame = window[window["player_id"] == player_id].set_index("frame_id")
         ball_window: pd.DataFrame = window[window["ball"]].set_index("frame_id")
 
-        prev_player_id = self.events.at[event.name - 1, "player_id"]
+        prev_player_id = self.events.at[event.name - 1, "player_id"] if event.name > 0 else ""
         next_player_id = player_id if pd.isna(event["next_player_id"]) else event["next_player_id"]
 
         if not player_window.empty and event["spadl_type"] == "tackle" and prev_player_id[:4] != player_id[:4]:
@@ -766,13 +766,13 @@ class ELASTIC:
         event = self.events.loc[event_idx]
         event_type = event["spadl_type"]
 
-        if self.events.at[event_idx - 1, "spadl_type"] == "take_on" and event_type == "take_on":
+        if event_idx > 0 and self.events.at[event_idx - 1, "spadl_type"] == "take_on" and event_type == "take_on":
             event_type = "second_take_on"
 
         s, matching_func = ELASTIC._find_matching_func(event_type)
         print(f"Event {event_idx}: {event_type} by {event['player_id']}")
 
-        prev_frames = self.matched_frames.loc[: event_idx - 1].values
+        prev_frames = self.matched_frames.loc[: event_idx - 1].values if event_idx > 0 else np.array([0])
         min_frame = np.nanmax([np.nanmax(prev_frames), 0])
 
         if event_type in self.post_sync_types and event["next_type"] not in self.post_sync_types:
@@ -835,8 +835,6 @@ class ELASTIC:
                 plt.plot(features[feat], label=feat, c=color)
 
             ymax = 25
-            # plt.xticks(rotation=45)
-            plt.xticks()
             plt.ylim(0, ymax)
             plt.vlines(windows[0], 0, ymax, color="k", linestyles="-", label="annot_frame")
 
@@ -850,6 +848,7 @@ class ELASTIC:
 
             plt.legend(loc="upper right", fontsize=15)
             plt.grid(axis="y")
+            plt.xticks(rotation=45)
 
             if display_title:
                 plt.title(f"{event_type} at frame {best_frame}")
