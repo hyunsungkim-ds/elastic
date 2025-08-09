@@ -10,62 +10,66 @@ from kloppy.domain import Dimension, MetricPitchDimensions, Orientation, Trackin
 from scipy.signal import savgol_filter
 
 from sync import config
-from tools.preprocessor import Preprocessor
+from tools.match_data import MatchData
+
+META_DIR = "data/sportec/metadata"
+EVENT_DIR = "data/sportec/event"
+TRACKING_DIR = "data/sportec/tracking"
+
+POSITION_MAPPING = {
+    None: None,
+    "TW": "GK",
+    "IVR": "RCB",
+    "IVL": "LCB",
+    "IVZ": "CB",
+    "RV": "RB",
+    "LV": "LB",
+    "DMR": "RDM",
+    "DRM": "RDM",
+    "DML": "LDM",
+    "DLM": "LDM",
+    "DMZ": "CDM",
+    "HR": "RCM",
+    "HL": "LCM",
+    "MZ": "CM",
+    "RM": "RM",
+    "LM": "LM",
+    "ORM": "RAM",
+    "OLM": "LAM",
+    "ZO": "CAM",
+    "RA": "RWF",
+    "LA": "LWF",
+    "STR": "RCF",
+    "STL": "LCF",
+    "STZ": "CF",
+}
 
 
-class SportecProcessor:
-    def __init__(self):
-        self.meta_dir = "data/sportec/metadata"
-        self.event_dir = "data/sportec/event"
-        self.tracking_dir = "data/sportec/tracking"
+class SportecData(MatchData):
+    def __init__(self, match_id: str):
+        self.match_id = match_id
 
-        self.pitch_dims = MetricPitchDimensions(standardized=True, x_dim=Dimension(0, 105), y_dim=Dimension(0, 68))
-        self.position_mapping: Dict[str, str] = {
-            None: None,
-            "TW": "GK",
-            "IVR": "RCB",
-            "IVL": "LCB",
-            "IVZ": "CB",
-            "RV": "RB",
-            "LV": "LB",
-            "DMR": "RDM",
-            "DRM": "RDM",
-            "DML": "LDM",
-            "DLM": "LDM",
-            "DMZ": "CDM",
-            "HR": "RCM",
-            "HL": "LCM",
-            "MZ": "CM",
-            "RM": "RM",
-            "LM": "LM",
-            "ORM": "RAM",
-            "OLM": "LAM",
-            "ZO": "CAM",
-            "RA": "RWF",
-            "LA": "LWF",
-            "STR": "RCF",
-            "STL": "LCF",
-            "STZ": "CF",
-        }
+        meta_files = [f for f in os.listdir(META_DIR) if "matchinformation" in f and match_id in f]
+        event_files = [f for f in os.listdir(EVENT_DIR) if "events" in f and match_id in f]
+        tracking_files = [f for f in os.listdir(TRACKING_DIR) if "positions" in f and match_id in f]
 
-    def get_meta_path(self, match_id: str) -> str:
-        meta_file = [f for f in os.listdir(self.meta_dir) if "matchinformation" in f and match_id in f][0]
-        return f"{self.meta_dir}/{meta_file}"
+        assert meta_files and event_files and tracking_files
 
-    def get_event_path(self, match_id: str) -> str:
-        event_file = [f for f in os.listdir(self.event_dir) if "events" in f and match_id in f][0]
-        return f"{self.event_dir}/{event_file}"
+        self.meta_path = f"{META_DIR}/{meta_files[0]}"
+        self.event_path = f"{EVENT_DIR}/{event_files[0]}"
+        self.tracking_path = f"{TRACKING_DIR}/{tracking_files[0]}"
 
-    def get_tracking_path(self, match_id: str) -> str:
-        tracking_file = [f for f in os.listdir(self.tracking_dir) if "positions" in f and match_id in f][0]
-        return f"{self.tracking_dir}/{tracking_file}"
+        lineup = self.load_lineup_data(self.meta_path)
+        events = self.load_event_data(self.event_path)
 
-    def load_player_metadata(self, match_id: str) -> pd.DataFrame:
-        meta_path = self.get_meta_path(match_id)
+        # Delay loading tracking data since it often takes more than a minute
+        super().__init__(lineup, events, tracking=None)
 
+    @staticmethod
+    def load_lineup_data(meta_path: str) -> pd.DataFrame:
         tree = ET.parse(meta_path)
         root = tree.getroot()
-        player_list = []
+        lineup_list = []
 
         for team in root.findall(".//Team"):
             team_id = team.attrib.get("TeamId")
@@ -76,7 +80,7 @@ class SportecProcessor:
             if players is not None:
                 for player in players.findall("Player"):
                     uniform_number = int(player.attrib.get("ShirtNumber"))
-                    player_list.append(
+                    lineup_list.append(
                         {
                             "team_id": team_id,
                             "team_name": team_name,
@@ -86,14 +90,15 @@ class SportecProcessor:
                             "object_id": f"{home_away}_{uniform_number}",
                             "player_name": player.attrib.get("Shortname"),
                             "starting": player.attrib.get("Starting") == "true",
-                            "playing_position": self.position_mapping[player.attrib.get("PlayingPosition")],
+                            "playing_position": POSITION_MAPPING[player.attrib.get("PlayingPosition")],
                             "captain": player.attrib.get("TeamLeader") == "true",
                         }
                     )
 
-        return pd.DataFrame(player_list).sort_values(["home_away", "uniform_number"], ignore_index=True)
+        return pd.DataFrame(lineup_list).sort_values(["home_away", "uniform_number"], ignore_index=True)
 
-    def parse_event_data(event_path: str) -> pd.DataFrame:
+    @staticmethod
+    def load_event_data(event_path: str) -> pd.DataFrame:
         def parse_play(play: Optional[ET.Element] = None) -> Tuple[str, str, str, str, str, bool, str]:
             if play is not None and play.tag == "Play":
                 if play.find("Pass") is not None:
@@ -247,7 +252,7 @@ class SportecProcessor:
                     "event_id": event_id,
                     "event_type": event_type,
                     "period_id": period_id,
-                    "timestamp": timestamp,
+                    "utc_timestamp": timestamp,
                     "team_id": team_id,
                     "player_id": player_id,
                     "coordinates_x": float(x) if x else None,
@@ -264,25 +269,55 @@ class SportecProcessor:
             )
 
         events = pd.DataFrame(event_rows)
-        events["datetime"] = pd.to_datetime(events["timestamp"]).dt.tz_localize(None)
-        events["timestamp"] = None
-        events.sort_values("datetime", ignore_index=True, inplace=True)
+        events["utc_timestamp"] = pd.to_datetime(events["utc_timestamp"]).dt.tz_convert("UTC").dt.tz_localize(None)
+        events.sort_values("utc_timestamp", ignore_index=True, inplace=True)
 
         period_ids = [id for id in events["period_id"].unique() if id > 0]
         for period_id in period_ids:
             period_events = events[events["period_id"] == period_id].copy()
             start_idx = period_events[period_events["set_piece_type"] == "KickOff"].index[0]
             end_idx = period_events[period_events["event_type"] == "FinalWhistle"].index[-1]
-
-            start_dt = events.at[start_idx, "datetime"]
             events.loc[start_idx:end_idx, "period_id"] = period_id
-            events.loc[start_idx:end_idx, "timestamp"] = events.loc[start_idx:end_idx, "datetime"] - start_dt
 
-        events["timestamp"] = pd.to_timedelta(events["timestamp"])
-        return events.drop("datetime", axis=1)
+        return events
+
+    @staticmethod
+    def load_tracking_data(
+        tracking_path: str, meta_path: str, lineup: pd.DataFrame
+    ) -> Tuple[TrackingDataset, pd.DataFrame]:
+        print("Loading the tracking data...")
+        tracking_ds = sportec.load_tracking(raw_data=tracking_path, meta_data=meta_path, only_alive=False)
+
+        print("Transforming the tracking data coordinates...")
+        pitch_dims = MetricPitchDimensions(standardized=True, x_dim=Dimension(0, 105), y_dim=Dimension(0, 68))
+        tracking_ds = tracking_ds.transform(
+            to_orientation=Orientation.HOME_AWAY,
+            to_pitch_dimensions=pitch_dims,
+        )
+
+        tracking_df: pd.DataFrame = tracking_ds.to_df()
+        player_mapping = lineup.set_index("player_id")["object_id"].to_dict()
+        column_mapping = {f"{k}_{t}": f"{v}_{t}" for k, v in player_mapping.items() for t in ["x", "y", "d", "s"]}
+        tracking_df = tracking_df.rename(columns=column_mapping)
+
+        player_x_cols = [c for c in tracking_df.columns if fnmatch(c, "home_*_x") or fnmatch(c, "away_*_x")]
+        tracking_df = tracking_df.dropna(subset=player_x_cols, how="all").copy()
+
+        return tracking_ds, tracking_df
+
+    @staticmethod
+    def find_object_ids(lineup: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
+        events = events.copy()
+
+        player_mapping = lineup.set_index("player_id")["object_id"].to_dict()
+        events["object_id"] = events["player_id"].map(player_mapping)
+        events["receiver_id"] = events["receiver_player_id"].map(player_mapping)
+
+        return events
 
     @staticmethod
     def find_spadl_event_types(events: pd.DataFrame) -> pd.DataFrame:
+        events = events.copy()
         events["spadl_type"] = None
 
         pass_mask = events["event_type"] == "Pass"
@@ -365,32 +400,44 @@ class SportecProcessor:
         return events
 
     @staticmethod
-    def format_events_for_syncer(events: pd.DataFrame, player_df: pd.DataFrame) -> pd.DataFrame:
-        player_mapping = player_df.set_index("player_id")["object_id"].to_dict()
-        events["object_id"] = events["player_id"].map(player_mapping)
-        events["receiver_id"] = events["receiver_player_id"].map(player_mapping)
-        events = SportecProcessor.find_spadl_event_types(events)
+    def align_directions_of_play(events: pd.DataFrame, tracking: pd.DataFrame) -> pd.DataFrame:
+        assert "object_id" in events.columns
+        events = events.copy()
 
-        selected_cols = ["period_id", "timestamp", "object_id", "spadl_type", "success"]
+        home_x_cols = [c for c in tracking.columns if fnmatch.fnmatch(c, "home_*_x")]
+        away_x_cols = [c for c in tracking.columns if fnmatch.fnmatch(c, "away_*_x")]
+
+        for i in tracking["period_id"].unique():
+            period_events = events[events["period_id"] == i].copy()
+            home_mean_x = tracking.loc[tracking["period_id"] == i, home_x_cols].mean().mean()
+            away_mean_x = tracking.loc[tracking["period_id"] == i, away_x_cols].mean().mean()
+
+            if home_mean_x < away_mean_x:  # Flip the x-axis of the home team's events
+                home_events = period_events[period_events["object_id"].str.startswith("home", na=False)].copy()
+                events.loc[home_events.index, "start_x"] = (config.FIELD_LENGTH - home_events["start_x"]).round(2)
+            else:  # Flip the x-axis of the away team's events
+                away_events = period_events[period_events["object_id"].str.startswith("away", na=False)].copy()
+                events.loc[away_events.index, "start_x"] = (config.FIELD_LENGTH - home_events["start_x"]).round(2)
+
+        return events
+
+    def format_events_for_syncer(self) -> pd.DataFrame:
+        if self.events is None:
+            self.events = SportecData.load_event_data(self.event_path)
+
+        events = SportecData.find_object_ids(self.lineup, self.events)
+        events = SportecData.find_spadl_event_types(events)
+
+        selected_cols = [
+            "period_id",
+            "utc_timestamp",
+            "object_id",
+            "spadl_type",
+            "coordinates_x",
+            "coordinates_y",
+            "success",
+        ]
         input_events = events.loc[events["spadl_type"].notna(), selected_cols].copy()
-        return input_events.rename(columns={"object_id": "player_id"})
+        input_events.columns = selected_cols[:2] + ["player_id", "event_type", "start_x", "start_y", "success"]
 
-    def load_tracking_data(self, match_id: str, player_ds: pd.DataFrame) -> Tuple[TrackingDataset, pd.DataFrame]:
-        meta_path = self.get_meta_path(match_id)
-        tracking_path = self.get_tracking_path(match_id)
-
-        print(f"Loading the tracking data for Match {match_id}")
-        tracking_ds = sportec.load_tracking(raw_data=tracking_path, meta_data=meta_path, only_alive=False)
-
-        print("Transforming the tracking data coordinates")
-        tracking_ds = tracking_ds.transform(to_orientation=Orientation.HOME_AWAY, to_pitch_dimensions=self.pitch_dims)
-
-        tracking_df: pd.DataFrame = tracking_ds.to_df()
-        player_mapping = player_ds.set_index("player_id")["object_id"].to_dict()
-        column_mapping = {f"{k}_{t}": f"{v}_{t}" for k, v in player_mapping.items() for t in ["x", "y", "d", "s"]}
-        tracking_df = tracking_df.rename(columns=column_mapping)
-
-        player_x_cols = [c for c in tracking_df.columns if fnmatch(c, "home_*_x") or fnmatch(c, "away_*_x")]
-        tracking_df = tracking_df.dropna(subset=player_x_cols, how="all").copy()
-
-        return tracking_ds, tracking_df
+        return input_events

@@ -14,7 +14,6 @@ from matplotlib import animation, axes, collections, lines, text
 from matplotlib.patches import Rectangle
 
 import tools.matplotsoccer as mps
-from tools.data_utils import merge_events_and_tracking
 from tools.stats_perform_data import StatsPerformData, find_spadl_event_types
 
 anim_config = {
@@ -492,7 +491,7 @@ if __name__ == "__main__":
 
         match = StatsPerformData(match_lineup, match_events, tracking)
         match.refine_events()
-        merged_df = merge_events_and_tracking(events, tracking, ffill=True)
+        merged_df = StatsPerformData.merge_events_and_tracking(events, tracking, ffill=True)
 
     print("2. Animate selected trajectories")
     end_frame = merged_df.index[-1] if args.end_frame == 0 else args.end_frame

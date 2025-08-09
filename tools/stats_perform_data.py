@@ -1,17 +1,21 @@
-import fnmatch
+from fnmatch import fnmatch
 from typing import Tuple
 
 import numpy as np
 import pandas as pd
 
 from sync import config
-from tools.data_utils import align_directions_of_play, calculate_event_timestamps
 from tools.match_data import MatchData
 
 
 class StatsPerformData(MatchData):
-    def __init__(self, lineup, events, tracking, fps=25):
-        super().__init__(lineup, events, tracking, fps)
+    def __init__(self, lineup: pd.DataFrame, events: pd.DataFrame, tracking: pd.DataFrame, fps: float = 25):
+        super().__init__()
+
+        self.lineup = lineup.copy()
+        self.events = events.copy()
+        self.tracking = tracking.copy()
+        self.fps = fps
 
         lineup_cols = ["contestant_name", "shirt_number", "match_name"]
         self.lineup = self.lineup[lineup_cols].copy().sort_values(lineup_cols)
@@ -49,8 +53,8 @@ class StatsPerformData(MatchData):
         events = events.copy()
 
         lineup["object_id"] = None
-        home_id_cols = [c for c in tracking.columns if fnmatch.fnmatch(c, "home_*_id")]
-        away_id_cols = [c for c in tracking.columns if fnmatch.fnmatch(c, "away_*_id")]
+        home_id_cols = [c for c in tracking.columns if fnmatch(c, "home_*_id")]
+        away_id_cols = [c for c in tracking.columns if fnmatch(c, "away_*_id")]
 
         for c in home_id_cols + away_id_cols:
             player_id_series = tracking[c].dropna()
@@ -61,14 +65,37 @@ class StatsPerformData(MatchData):
 
         return lineup, events
 
+    @staticmethod
+    def align_directions_of_play(events: pd.DataFrame, tracking: pd.DataFrame) -> pd.DataFrame:
+        events = events.copy()
+
+        home_x_cols = [c for c in tracking.columns if fnmatch(c, "home_*_x")]
+        away_x_cols = [c for c in tracking.columns if fnmatch(c, "away_*_x")]
+
+        for i in tracking["period_id"].unique():
+            period_events = events[events["period_id"] == i].copy()
+            home_mean_x = tracking.loc[tracking["period_id"] == i, home_x_cols].mean().mean()
+            away_mean_x = tracking.loc[tracking["period_id"] == i, away_x_cols].mean().mean()
+
+            if home_mean_x < away_mean_x:  # Rotate the away team's events
+                away_events = period_events[period_events["object_id"].str.startswith("away", na=False)].copy()
+                events.loc[away_events.index, "start_x"] = (config.FIELD_LENGTH - away_events["start_x"]).round(2)
+                events.loc[away_events.index, "start_y"] = (config.FIELD_WIDTH - away_events["start_y"]).round(2)
+            else:  # Rotate the home team's events
+                home_events = period_events[period_events["object_id"].str.startswith("home", na=False)].copy()
+                events.loc[home_events.index, "start_x"] = (config.FIELD_LENGTH - home_events["start_x"]).round(2)
+                events.loc[home_events.index, "start_y"] = (config.FIELD_WIDTH - home_events["start_y"]).round(2)
+
+        return events
+
     def refine_events(self):
         lineup = self.lineup.copy()
         events = self.events.copy()
         tracking = self.tracking.copy()
 
-        events = calculate_event_timestamps(events)
+        events = MatchData.calculate_event_seconds(events)
         lineup, events = StatsPerformData.find_object_ids(lineup, events, tracking)
-        events = align_directions_of_play(events, tracking)
+        events = StatsPerformData.align_directions_of_play(events, tracking)
 
         self.lineup = lineup
         self.events = events
