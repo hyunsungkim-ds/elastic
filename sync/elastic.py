@@ -90,10 +90,10 @@ class ELASTIC:
         inside_center_circle = self.tracking[
             (self.tracking["frame"] == frame)
             & (self.tracking["player_id"].str.startswith(kickoff_player.split("_")[0]))
-            & (self.tracking["x"] >= config.FIELD_LENGTH / 2 - 5)
-            & (self.tracking["x"] <= config.FIELD_LENGTH / 2 + 5)
-            & (self.tracking["y"] >= config.FIELD_WIDTH / 2 - 5)
-            & (self.tracking["y"] <= config.FIELD_WIDTH / 2 + 5)
+            & (self.tracking["x"] >= config.PITCH_X / 2 - 5)
+            & (self.tracking["x"] <= config.PITCH_X / 2 + 5)
+            & (self.tracking["y"] >= config.PITCH_Y / 2 - 5)
+            & (self.tracking["y"] <= config.PITCH_Y / 2 + 5)
         ]
         if len(inside_center_circle) > 1:
             print("Multiple players inside the center circle at kickoff!")
@@ -103,10 +103,10 @@ class ELASTIC:
             (self.tracking["frame"].isin(frames_to_check))
             & (self.tracking["period_id"] == period)
             & self.tracking["ball"]
-            & (self.tracking["x"] >= config.FIELD_LENGTH / 2 - 3)
-            & (self.tracking["x"] <= config.FIELD_LENGTH / 2 + 3)
-            & (self.tracking["y"] >= config.FIELD_WIDTH / 2 - 3)
-            & (self.tracking["y"] <= config.FIELD_WIDTH / 2 + 3)
+            & (self.tracking["x"] >= config.PITCH_X / 2 - 3)
+            & (self.tracking["x"] <= config.PITCH_X / 2 + 3)
+            & (self.tracking["y"] >= config.PITCH_Y / 2 - 3)
+            & (self.tracking["y"] <= config.PITCH_Y / 2 + 3)
         ]
         ball_window = ball_window[(ball_window["frame"].diff() > 1).astype(int).cumsum() < 1].set_index("frame")
 
@@ -226,8 +226,8 @@ class ELASTIC:
 
             else:
                 # Find the closest player among the opponents closer than the event player to the target goal
-                goal_x = config.FIELD_LENGTH if player_id[:4] == "home" else 0
-                goal_y = config.FIELD_WIDTH / 2
+                goal_x = config.PITCH_X if player_id[:4] == "home" else 0
+                goal_y = config.PITCH_Y / 2
 
                 opponents = [p for p in window["player_id"].unique() if p is not None and p[:4] != player_id[:4]]
                 oppo_x = window[window["player_id"].isin(opponents)].pivot_table("x", "frame", "player_id", "first")
@@ -242,7 +242,7 @@ class ELASTIC:
                 oppo_goal_dists = np.sqrt((oppo_x - goal_x) ** 2 + (oppo_y - goal_y) ** 2)
                 oppo_mask = oppo_goal_dists.le(player_goal_dists + 1, axis=0)
 
-                oppo_dists_masked = np.where(oppo_mask.values, oppo_dists, config.FIELD_LENGTH)
+                oppo_dists_masked = np.where(oppo_mask.values, oppo_dists, config.PITCH_X)
                 closest_opponents = oppo_x.columns[np.nanargmin(oppo_dists_masked, axis=1)]
 
                 closest_rows = []

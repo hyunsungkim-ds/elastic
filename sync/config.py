@@ -3,8 +3,8 @@ EVENT_PATH = "data/ajax/event/event.parquet"
 TRACKING_DIR = "data/ajax/tracking"
 OUTPUT_DIR = "data/ajax/event_synced"
 
-FIELD_LENGTH = 105.0  # unit: meters
-FIELD_WIDTH = 68.0  # unit: meters
+PITCH_X = 105.0  # unit: meters
+PITCH_Y = 68.0  # unit: meters
 
 SPADL_TYPES = [
     "pass",

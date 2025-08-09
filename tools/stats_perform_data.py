@@ -79,12 +79,12 @@ class StatsPerformData(MatchData):
 
             if home_mean_x < away_mean_x:  # Rotate the away team's events
                 away_events = period_events[period_events["object_id"].str.startswith("away", na=False)].copy()
-                events.loc[away_events.index, "start_x"] = (config.FIELD_LENGTH - away_events["start_x"]).round(2)
-                events.loc[away_events.index, "start_y"] = (config.FIELD_WIDTH - away_events["start_y"]).round(2)
+                events.loc[away_events.index, "start_x"] = (config.PITCH_X - away_events["start_x"]).round(2)
+                events.loc[away_events.index, "start_y"] = (config.PITCH_Y - away_events["start_y"]).round(2)
             else:  # Rotate the home team's events
                 home_events = period_events[period_events["object_id"].str.startswith("home", na=False)].copy()
-                events.loc[home_events.index, "start_x"] = (config.FIELD_LENGTH - home_events["start_x"]).round(2)
-                events.loc[home_events.index, "start_y"] = (config.FIELD_WIDTH - home_events["start_y"]).round(2)
+                events.loc[home_events.index, "start_x"] = (config.PITCH_X - home_events["start_x"]).round(2)
+                events.loc[home_events.index, "start_y"] = (config.PITCH_Y - home_events["start_y"]).round(2)
 
         return events
 
@@ -141,10 +141,10 @@ def find_spadl_event_types(events: pd.DataFrame, sort=True) -> pd.DataFrame:
     events.loc[events["spadl_type"].isin(["shot", "shot_freekick", "shot_penalty"]), "outcome"] = False
 
     is_inside_center: pd.Series = (
-        (events["start_x"] >= config.FIELD_LENGTH / 2 - 3)
-        & (events["start_x"] <= config.FIELD_LENGTH / 2 + 3)
-        & (events["start_y"] >= config.FIELD_WIDTH / 2 - 3)
-        & (events["start_y"] <= config.FIELD_WIDTH / 2 + 3)
+        (events["start_x"] >= config.PITCH_X / 2 - 3)
+        & (events["start_x"] <= config.PITCH_X / 2 + 3)
+        & (events["start_y"] >= config.PITCH_Y / 2 - 3)
+        & (events["start_y"] <= config.PITCH_Y / 2 + 3)
     )
     events.loc[
         (events["spadl_type"].isin(["shot", "shot_freekick", "shot_penalty"]))

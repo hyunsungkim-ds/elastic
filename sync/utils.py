@@ -3,7 +3,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from sync.config import FIELD_LENGTH, FIELD_WIDTH
+from sync.config import PITCH_X, PITCH_Y
 
 
 def format_timestamp(total_seconds: float) -> str:
@@ -76,7 +76,7 @@ def score_frames_receive(features: pd.DataFrame) -> np.ndarray:
 
 
 # Scoring function for ETSY
-max_dist = np.sqrt(FIELD_LENGTH**2 + FIELD_WIDTH**2)
+max_dist = np.sqrt(PITCH_X**2 + PITCH_Y**2)
 etsy_dist_func = linear_scoring_func(0, max_dist, increasing=False)
 
 

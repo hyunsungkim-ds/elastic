@@ -73,10 +73,10 @@ class ETSY:
         inside_center_circle = self.tracking[
             (self.tracking["frame"] == frame)
             & (self.tracking["player_id"].str.startswith(kickoff_player.split("_")[0]))
-            & (self.tracking["x"] >= config.FIELD_LENGTH / 2 - 5)
-            & (self.tracking["x"] <= config.FIELD_LENGTH / 2 + 5)
-            & (self.tracking["y"] >= config.FIELD_WIDTH / 2 - 5)
-            & (self.tracking["y"] <= config.FIELD_WIDTH / 2 + 5)
+            & (self.tracking["x"] >= config.PITCH_X / 2 - 5)
+            & (self.tracking["x"] <= config.PITCH_X / 2 + 5)
+            & (self.tracking["y"] >= config.PITCH_Y / 2 - 5)
+            & (self.tracking["y"] <= config.PITCH_Y / 2 + 5)
         ]
         if len(inside_center_circle) > 1:
             print("Multiple players inside the center circle at kickoff!")
@@ -86,10 +86,10 @@ class ETSY:
             (self.tracking["frame"].isin(frames_to_check))
             & (self.tracking["period_id"] == period)
             & self.tracking["ball"]
-            & (self.tracking["x"] >= config.FIELD_LENGTH / 2 - 3)
-            & (self.tracking["x"] <= config.FIELD_LENGTH / 2 + 3)
-            & (self.tracking["y"] >= config.FIELD_WIDTH / 2 - 3)
-            & (self.tracking["y"] <= config.FIELD_WIDTH / 2 + 3)
+            & (self.tracking["x"] >= config.PITCH_X / 2 - 3)
+            & (self.tracking["x"] <= config.PITCH_X / 2 + 3)
+            & (self.tracking["y"] >= config.PITCH_Y / 2 - 3)
+            & (self.tracking["y"] <= config.PITCH_Y / 2 + 3)
         ]
         ball_window = ball_window[(ball_window["frame"].diff() > 1).astype(int).cumsum() < 1].set_index("frame")
 

@@ -7,7 +7,7 @@ import pandas as pd
 from kloppy import sportec
 from kloppy.domain import Dimension, MetricPitchDimensions, Orientation, TrackingDataset
 
-from sync.config import FIELD_LENGTH, FIELD_WIDTH
+from sync.config import PITCH_X, PITCH_Y
 from tools.match_data import MatchData
 
 META_DIR = "data/sportec/metadata"
@@ -298,8 +298,8 @@ class SportecData(MatchData):
         print("Transforming the tracking data coordinates...")
         pitch_dims = MetricPitchDimensions(
             standardized=True,
-            x_dim=Dimension(0, FIELD_LENGTH),
-            y_dim=Dimension(0, FIELD_WIDTH),
+            x_dim=Dimension(0, PITCH_X),
+            y_dim=Dimension(0, PITCH_Y),
         )
         tracking_ds = tracking_ds.transform(
             to_orientation=Orientation.HOME_AWAY,
@@ -326,13 +326,13 @@ class SportecData(MatchData):
         away_gk_ids = gk_lineup.loc[gk_lineup["home_away"] == "away", "player_id"].tolist()
 
         for period_id in events["period_id"].unique():
-            p_events = events[events["period_id"] == period_id].copy()
-            home_gk_x = p_events.loc[p_events["player_id"].isin(home_gk_ids), "coordinates_x"]
-            away_gk_x = p_events.loc[p_events["player_id"].isin(away_gk_ids), "coordinates_x"]
+            period_events = events[events["period_id"] == period_id].copy()
+            home_gk_x = period_events.loc[period_events["player_id"].isin(home_gk_ids), "coordinates_x"]
+            away_gk_x = period_events.loc[period_events["player_id"].isin(away_gk_ids), "coordinates_x"]
 
             if home_gk_x.mean() > away_gk_x.mean():  # Rotate events so that the home team plays on the left side
-                events.loc[p_events.index, "coordinates_x"] = (FIELD_LENGTH - p_events["coordinates_x"]).round(2)
-                events.loc[p_events.index, "coordinates_y"] = (FIELD_WIDTH - p_events["coordinates_y"]).round(2)
+                events.loc[period_events.index, "coordinates_x"] = (PITCH_X - period_events["coordinates_x"]).round(2)
+                events.loc[period_events.index, "coordinates_y"] = (PITCH_Y - period_events["coordinates_y"]).round(2)
 
         return events
 
