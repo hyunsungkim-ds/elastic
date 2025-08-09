@@ -1,15 +1,13 @@
 import os
 import xml.etree.ElementTree as ET
 from fnmatch import fnmatch
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple
 
-import numpy as np
 import pandas as pd
 from kloppy import sportec
 from kloppy.domain import Dimension, MetricPitchDimensions, Orientation, TrackingDataset
-from scipy.signal import savgol_filter
 
-from sync import config
+from sync.config import FIELD_LENGTH, FIELD_WIDTH
 from tools.match_data import MatchData
 
 META_DIR = "data/sportec/metadata"
@@ -46,7 +44,8 @@ POSITION_MAPPING = {
 
 
 class SportecData(MatchData):
-    def __init__(self, match_id: str):
+    def __init__(self, match_id: str, load_tracking: bool = True):
+        super().__init__()
         self.match_id = match_id
 
         meta_files = [f for f in os.listdir(META_DIR) if "matchinformation" in f and match_id in f]
@@ -59,11 +58,14 @@ class SportecData(MatchData):
         self.event_path = f"{EVENT_DIR}/{event_files[0]}"
         self.tracking_path = f"{TRACKING_DIR}/{tracking_files[0]}"
 
-        lineup = self.load_lineup_data(self.meta_path)
-        events = self.load_event_data(self.event_path)
+        self.lineup = self.load_lineup_data(self.meta_path)
+        self.events = self.load_event_data(self.event_path)
+        self.events = self.align_event_orientations(self.lineup, self.events)
 
-        # Delay loading tracking data since it often takes more than a minute
-        super().__init__(lineup, events, tracking=None)
+        # Since it often takes more than a minute to load tracking data, you can choose whether to delay loading
+        if load_tracking:
+            self.tracking_ds, self.tracking = self.load_tracking_data(self.tracking_path, self.meta_path, self.lineup)
+            self.fps = self.tracking_ds.frame_rate
 
     @staticmethod
     def load_lineup_data(meta_path: str) -> pd.DataFrame:
@@ -286,10 +288,19 @@ class SportecData(MatchData):
         tracking_path: str, meta_path: str, lineup: pd.DataFrame
     ) -> Tuple[TrackingDataset, pd.DataFrame]:
         print("Loading the tracking data...")
-        tracking_ds = sportec.load_tracking(raw_data=tracking_path, meta_data=meta_path, only_alive=False)
+        tracking_ds = sportec.load_tracking(
+            raw_data=tracking_path,
+            meta_data=meta_path,
+            coordinates="sportec",
+            only_alive=False,
+        )
 
         print("Transforming the tracking data coordinates...")
-        pitch_dims = MetricPitchDimensions(standardized=True, x_dim=Dimension(0, 105), y_dim=Dimension(0, 68))
+        pitch_dims = MetricPitchDimensions(
+            standardized=True,
+            x_dim=Dimension(0, FIELD_LENGTH),
+            y_dim=Dimension(0, FIELD_WIDTH),
+        )
         tracking_ds = tracking_ds.transform(
             to_orientation=Orientation.HOME_AWAY,
             to_pitch_dimensions=pitch_dims,
@@ -302,8 +313,28 @@ class SportecData(MatchData):
 
         player_x_cols = [c for c in tracking_df.columns if fnmatch(c, "home_*_x") or fnmatch(c, "away_*_x")]
         tracking_df = tracking_df.dropna(subset=player_x_cols, how="all").copy()
+        tracking_df["timestamp"] = tracking_df["timestamp"].dt.total_seconds()
 
         return tracking_ds, tracking_df
+
+    @staticmethod
+    def align_event_orientations(lineup: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
+        events = events.copy()
+
+        gk_lineup = lineup.loc[lineup["playing_position"] == "GK"]
+        home_gk_ids = gk_lineup.loc[gk_lineup["home_away"] == "home", "player_id"].tolist()
+        away_gk_ids = gk_lineup.loc[gk_lineup["home_away"] == "away", "player_id"].tolist()
+
+        for period_id in events["period_id"].unique():
+            p_events = events[events["period_id"] == period_id].copy()
+            home_gk_x = p_events.loc[p_events["player_id"].isin(home_gk_ids), "coordinates_x"]
+            away_gk_x = p_events.loc[p_events["player_id"].isin(away_gk_ids), "coordinates_x"]
+
+            if home_gk_x.mean() > away_gk_x.mean():  # Rotate events so that the home team plays on the left side
+                events.loc[p_events.index, "coordinates_x"] = (FIELD_LENGTH - p_events["coordinates_x"]).round(2)
+                events.loc[p_events.index, "coordinates_y"] = (FIELD_WIDTH - p_events["coordinates_y"]).round(2)
+
+        return events
 
     @staticmethod
     def find_object_ids(lineup: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
@@ -399,32 +430,7 @@ class SportecData(MatchData):
 
         return events
 
-    @staticmethod
-    def align_directions_of_play(events: pd.DataFrame, tracking: pd.DataFrame) -> pd.DataFrame:
-        assert "object_id" in events.columns
-        events = events.copy()
-
-        home_x_cols = [c for c in tracking.columns if fnmatch.fnmatch(c, "home_*_x")]
-        away_x_cols = [c for c in tracking.columns if fnmatch.fnmatch(c, "away_*_x")]
-
-        for i in tracking["period_id"].unique():
-            period_events = events[events["period_id"] == i].copy()
-            home_mean_x = tracking.loc[tracking["period_id"] == i, home_x_cols].mean().mean()
-            away_mean_x = tracking.loc[tracking["period_id"] == i, away_x_cols].mean().mean()
-
-            if home_mean_x < away_mean_x:  # Flip the x-axis of the home team's events
-                home_events = period_events[period_events["object_id"].str.startswith("home", na=False)].copy()
-                events.loc[home_events.index, "start_x"] = (config.FIELD_LENGTH - home_events["start_x"]).round(2)
-            else:  # Flip the x-axis of the away team's events
-                away_events = period_events[period_events["object_id"].str.startswith("away", na=False)].copy()
-                events.loc[away_events.index, "start_x"] = (config.FIELD_LENGTH - home_events["start_x"]).round(2)
-
-        return events
-
     def format_events_for_syncer(self) -> pd.DataFrame:
-        if self.events is None:
-            self.events = SportecData.load_event_data(self.event_path)
-
         events = SportecData.find_object_ids(self.lineup, self.events)
         events = SportecData.find_spadl_event_types(events)
 
@@ -441,3 +447,23 @@ class SportecData(MatchData):
         input_events.columns = selected_cols[:2] + ["player_id", "event_type", "start_x", "start_y", "success"]
 
         return input_events
+
+    def merge_events_and_tracking(
+        lineup: pd.DataFrame,
+        events: pd.DataFrame,
+        tracking: pd.DataFrame,
+        fps=25,
+        ffill=False,
+    ) -> pd.DataFrame:
+        events = events.copy()
+
+        if "timestamp" not in events.columns:
+            events = MatchData.calculate_event_seconds(events)
+
+        if "object_id" not in events.columns:
+            events = SportecData.find_object_ids(lineup, events)
+
+        if "spadl_type" not in events.columns:
+            events = SportecData.find_spadl_event_types(events)
+
+        return MatchData.merge_events_and_tracking(events, tracking, fps, ffill)

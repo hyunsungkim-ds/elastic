@@ -66,7 +66,7 @@ class StatsPerformData(MatchData):
         return lineup, events
 
     @staticmethod
-    def align_directions_of_play(events: pd.DataFrame, tracking: pd.DataFrame) -> pd.DataFrame:
+    def align_event_orientations(events: pd.DataFrame, tracking: pd.DataFrame) -> pd.DataFrame:
         events = events.copy()
 
         home_x_cols = [c for c in tracking.columns if fnmatch(c, "home_*_x")]
@@ -95,7 +95,7 @@ class StatsPerformData(MatchData):
 
         events = MatchData.calculate_event_seconds(events)
         lineup, events = StatsPerformData.find_object_ids(lineup, events, tracking)
-        events = StatsPerformData.align_directions_of_play(events, tracking)
+        events = StatsPerformData.align_event_orientations(events, tracking)
 
         self.lineup = lineup
         self.events = events
