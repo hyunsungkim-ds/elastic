@@ -35,10 +35,10 @@ frame_delay_func = linear_scoring_func(0, 125, increasing=False)
 
 
 def score_frames_major(features: pd.DataFrame) -> np.ndarray:
-    ball_accel_score = 20 * ball_accel_func(features["ball_accel"].values)
-    player_dist_score = 20 * player_dist_func(features["player_dist"].values)
-    kick_dist_score = 20 * kick_dist_func(features["kick_dist"].values)
-    frame_delay_score = 40 * frame_delay_func(features["frame_delay"].values)
+    ball_accel_score = 25 * ball_accel_func(features["ball_accel"].values)
+    player_dist_score = 25 * player_dist_func(features["player_dist"].values)
+    kick_dist_score = 25 * kick_dist_func(features["kick_dist"].values)
+    frame_delay_score = 25 * frame_delay_func(features["frame_delay"].values)
     return ball_accel_score + player_dist_score + kick_dist_score + frame_delay_score
 
 
