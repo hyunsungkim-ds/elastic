@@ -71,4 +71,4 @@ EVENT_COLS = [
     "offside",
     "expected_goal",
 ]
-NEXT_EVENT_COLS = ["next_player_id", "next_type", "receiver_id", "receive_frame", "receive_ts"]
+NEXT_EVENT_COLS = ["next_player_id", "next_type", "receiver_id", "receive_frame_id", "receive_ts"]

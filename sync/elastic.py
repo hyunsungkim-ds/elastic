@@ -656,7 +656,7 @@ class ELASTIC:
             event_player = self.events.at[i, "player_id"]
 
             if event_type == "bad_touch":
-                prev_receive_frame = self.events.at[i - 1, "receive_frame"]
+                prev_receive_frame = self.events.at[i - 1, "receive_frame_id"]
                 prev_receiver = self.events.at[i - 1, "receiver_id"]
                 if event_player == prev_receiver and not np.isnan(prev_receive_frame):
                     self.matched_frames[i] = prev_receive_frame
@@ -683,7 +683,7 @@ class ELASTIC:
                 event_type = "second_take_on"
 
             prev_frames = self.matched_frames.loc[: i - 1].values
-            prev_receive_frames = self.events.loc[: i - 1, "receive_frame"].values - int(0.2 * self.fps)
+            prev_receive_frames = self.events.loc[: i - 1, "receive_frame_id"].values - int(0.2 * self.fps)
             min_frame = np.nanmax([np.nanmax(prev_frames), np.nanmax(prev_receive_frames), 0])
 
             next_frames = self.matched_frames[i:].values
@@ -747,7 +747,7 @@ class ELASTIC:
 
         self.events["frame_id"] = self.matched_frames
         self.events["synced_ts"] = self.events["frame_id"].map(self.frames["timestamp"].to_dict())
-        self.events["receive_ts"] = self.events["receive_frame"].map(self.frames["timestamp"].to_dict())
+        self.events["receive_ts"] = self.events["receive_frame_id"].map(self.frames["timestamp"].to_dict())
 
     def plot_window_features(self, event_idx: int, display_title: bool = True, save_path: str = None) -> pd.DataFrame:
         """

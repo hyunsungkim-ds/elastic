@@ -449,7 +449,7 @@ if __name__ == "__main__":
 
         for i in match_events.index:
             event = match_events.loc[i]
-            receive_frame = event["receive_frame"]
+            receive_frame = event["receive_frame_id"]
             next_frame = np.inf if i == match_events.index[-1] else match_events.at[i + 1, "frame"]
 
             if pd.notna(receive_frame) and receive_frame < next_frame:

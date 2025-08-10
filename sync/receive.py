@@ -173,14 +173,14 @@ class ReceiveDetector:
 
     def run(self, s=10) -> None:
         self.events["receiver_id"] = None
-        self.events["receive_frame"] = np.nan
+        self.events["receive_frame_id"] = np.nan
 
         for pass_idx in tqdm(self.passes.index, desc="Detecting receiving events"):
             frame, receiver, _, _ = self._detect_receive(pass_idx, s)
             self.passes.at[pass_idx, "receiver_id"] = receiver
-            self.passes.at[pass_idx, "receive_frame"] = frame
+            self.passes.at[pass_idx, "receive_frame_id"] = frame
             self.events.at[pass_idx, "receiver_id"] = receiver
-            self.events.at[pass_idx, "receive_frame"] = frame
+            self.events.at[pass_idx, "receive_frame_id"] = frame
 
     def plot_window_features(self, pass_idx: int, display_title: bool = True, save_path: str = None) -> pd.DataFrame:
         best_frame, receiver, features, cand_features = self._detect_receive(pass_idx)
