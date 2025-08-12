@@ -1,15 +1,25 @@
-<div align="center">
-	<h1>
-		ELASTIC
-	</h1>
-</div>
+<h1 align="center">ELASTIC</h1>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.9+-blue.svg" alt="Python Version: 3.9+" />
+  <a href="https://opensource.org/licenses/MPL-2.0">
+    <img src="https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg" alt="License: MPL 2.0" />
+  </a>
+</p>
 
 Source code for the paper [ELASTIC: Event-Tracking Data Synchronization in Soccer Without Annotated Event Locations](https://dtai.cs.kuleuven.be/events/MLSA25/papers/MLSA25_paper_181.pdf) by Kim et al., MLSA 2025.
 
 ## Introduction
 **ELASTIC (Event-Location-AgnoSTIC synchronizer)** is an algorithm for synchronizing event and tracking data in soccer. The source code is largely based on its previous work, [ETSY (Van Roy et al., 2023)](https://github.com/ML-KULeuven/ETSY.git), but the key difference is that our algorithm does not rely on human-annotated event locations, which are also prone to spatial errors.
 
-Instead, ELASTIC leverages more subtle motion features such as ball acceleration and kick distance to precisely detect the moment of pass-like or incoming events, as well as the player-ball distance that ETSY used. Our experimental results demonstrate that it outperforms existing synchronizers by a large margin. You can refer to more details in the paper (which will be published shortly via arXiv).
+Instead, ELASTIC leverages more subtle motion features such as ball acceleration and kick distance to precisely detect the moment of pass-like or incoming events, as well as the player-ball distance that ETSY used. Our experimental results demonstrate that it outperforms existing synchronizers by a large margin.
+
+As a visual result, the following video compares the raw event timestamps/locations (black "x" marks) and the synchronized event timestamps/locations (orange stars), alongside player and ball trajectories. You can refer to more details in the [paper](https://dtai.cs.kuleuven.be/events/MLSA25/papers/MLSA25_paper_181.pdf).
+
+<video width="99%" height="66%" controls>
+  <source src="docs/sportec_J03WMX_10000-11500.mp4" type="video/mp4">
+  Your browser does not support the video tag.
+</video>
 
 ## Getting Started
 You can install ELASTIC and necessary packages with the following commands.
