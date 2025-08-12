@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 from scipy.signal import savgol_filter
 
+from sync.utils import timestamp_to_seconds
+
 
 class MatchData(ABC):
     def __init__(self):
@@ -106,18 +108,52 @@ class MatchData(ABC):
 
     @staticmethod
     def merge_events_and_tracking(events: pd.DataFrame, tracking: pd.DataFrame, fps=25, ffill=False) -> pd.DataFrame:
+        events = events.copy()
+
         if "start_x" in events.columns:
             event_cols = ["period_id", "timestamp", "object_id", "spadl_type", "start_x", "start_y"]
         else:
             event_cols = ["period_id", "timestamp", "object_id", "spadl_type", "coordinates_x", "coordinates_y"]
 
-        events = events[event_cols].copy()
-        events["timestamp"] = ((events["timestamp"] * fps).round().astype(int) / fps).round(2)
+        renamed_cols = ["period_id", "timestamp", "player_id", "event_type", "event_x", "event_y"]
+        column_dict = dict(zip(event_cols, renamed_cols))
 
-        renamed_cols = ["period_id", "timestamp", "event_player", "event_type", "event_x", "event_y"]
-        merged = pd.merge(tracking, events, how="left").rename(columns=dict(zip(event_cols, renamed_cols)))
+        events["timestamp"] = ((events["timestamp"] * fps).round().astype(int) / fps).round(2)
+        merged = pd.merge(tracking, events[event_cols], how="left").rename(columns=column_dict)
 
         if ffill:
             merged[renamed_cols[2:]] = merged[renamed_cols[2:]].ffill()
+
+        return merged
+
+    def merge_synced_events_and_tracking(
+        events: pd.DataFrame, tracking: pd.DataFrame, fps=25, ffill=False
+    ) -> pd.DataFrame:
+        assert "synced_ts" in events.columns
+
+        column_mapping = {"spadl_type": "event_type", "start_x": "annot_x", "start_y": "annot_y"}
+        events = events.copy().rename(columns=column_mapping)
+
+        synced_cols = ["period_id", "synced_ts", "player_id", "event_type"]
+        synced_events = events.loc[events["synced_ts"].notna(), synced_cols].copy().reset_index(drop=True)
+        synced_events["timestamp"] = synced_events["synced_ts"].apply(timestamp_to_seconds)
+        synced_events.drop("synced_ts", axis=1, inplace=True)
+
+        annot_cols = ["period_id", "utc_timestamp", "annot_x", "annot_y"]
+        annot_events = events[annot_cols].copy()
+        annot_events = MatchData.calculate_event_seconds(annot_events)
+        annot_events["timestamp"] = ((annot_events["timestamp"] * fps).round().astype(int) / fps).round(2)
+        annot_events.drop("utc_timestamp", axis=1, inplace=True)
+
+        merged = pd.merge(tracking, synced_events, how="left")
+        merged = pd.merge(merged, annot_events, how="left")
+
+        event_mask = merged["player_id"].notna()
+        merged.loc[event_mask, "event_x"] = merged.loc[event_mask, "ball_x"]
+        merged.loc[event_mask, "event_y"] = merged.loc[event_mask, "ball_y"]
+
+        if ffill:
+            ffill_cols = ["player_id", "event_type", "event_x", "event_y", "annot_x", "annot_y"]
+            merged[ffill_cols] = merged[ffill_cols].ffill()
 
         return merged

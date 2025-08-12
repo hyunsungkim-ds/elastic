@@ -60,7 +60,7 @@ class SportecData(MatchData):
 
         self.lineup = self.load_lineup_data(self.meta_path)
         self.events = self.load_event_data(self.event_path)
-        self.events = self.align_event_orientations(self.lineup, self.events)
+        # self.events = self.align_event_orientations(self.lineup, self.events)
 
         # Since it often takes more than a minute to load tracking data, you can choose whether to delay loading
         if load_tracking:
@@ -302,7 +302,7 @@ class SportecData(MatchData):
             y_dim=Dimension(0, PITCH_Y),
         )
         tracking_ds = tracking_ds.transform(
-            to_orientation=Orientation.HOME_AWAY,
+            # to_orientation=Orientation.HOME_AWAY,
             to_pitch_dimensions=pitch_dims,
         )
 

@@ -23,6 +23,7 @@ anim_config = {
     "player_size": 400,
     "ball_size": 150,
     "star_size": 150,
+    "annot_size": 100,
     "cell_size": 50,
     "player_history": 20,
     "ball_history": 50,
@@ -34,12 +35,11 @@ class Animator:
         self,
         trace_dict: Dict[str, pd.DataFrame] = None,
         bg_heatmaps: np.ndarray = None,
-        player_dests: pd.DataFrame = None,
         player_sizes: np.ndarray = None,
         show_times=True,
         show_episodes=False,
         show_events=False,
-        annot_cols=None,  # column names for additional annotation
+        text_cols=None,  # column names for additional annotation
         rotate_pitch=False,
         anonymize=False,
         small_image=False,
@@ -47,14 +47,13 @@ class Animator:
     ):
         self.trace_dict = trace_dict
         self.bg_heatmaps = bg_heatmaps
-        self.dests = player_dests
         self.sizes = player_sizes
 
         self.sports = anim_config["sports"]
         self.show_times = show_times
         self.show_episodes = show_episodes
         self.show_events = show_events
-        self.annot_cols = annot_cols
+        self.text_cols = text_cols
         self.rotate_pitch = rotate_pitch
         self.anonymize = anonymize
 
@@ -85,14 +84,13 @@ class Animator:
         player_dict = dict(zip(players, np.arange(len(players)) + 1))
         plots = dict()
         annots = dict()
-        # ls = "-" if alpha == 1 else "--"
 
         for p in players:
             (plots[p],) = ax.plot([], [], c=color, alpha=alpha, ls=":", zorder=0)
 
-            player_num = player_dict[p] if anonymize else int(p.split("_")[-1])
+            player_id = player_dict[p] if anonymize else int(p.split("_")[-1])
             annots[p] = ax.annotate(
-                player_num,
+                player_id,
                 xy=traces.loc[0, [f"{p}_x", f"{p}_y"]],
                 ha="center",
                 va="center",
@@ -179,9 +177,9 @@ class Animator:
         scat = ax.scatter(
             x[0],
             y[0],
-            s=anim_config["star_size"],
+            s=anim_config["star_size"] if marker == "*" else anim_config["annot_size"],
             c=color,
-            edgecolors=edgecolor,
+            edgecolors=edgecolor if marker != "x" else None,
             marker=marker,
             zorder=3,
         )
@@ -190,34 +188,6 @@ class Animator:
     @staticmethod
     def animate_events(t: int, x: np.ndarray, y: np.ndarray, scat: collections.PatchCollection):
         scat.set_offsets(np.array([x[t], y[t]]))
-
-    @staticmethod
-    def plot_intent(ax=axes.Axes, patch_size=3):
-        patch = Rectangle(xy=(0, 0), width=patch_size, height=patch_size, color="lime", alpha=0, zorder=0)
-        ax.add_patch(patch)
-        return patch
-
-    @staticmethod
-    def animate_intent(t: int, intents: np.array, patch=Rectangle, patch_size=3):
-        patch.set_xy([intents[t, 0] - patch_size / 2, intents[t, 1] - patch_size / 2])
-        patch.set_alpha(0.5)
-
-    def plot_guides(traces: pd.DataFrame, dests: pd.DataFrame, ax=axes.Axes):
-        players = [c[:-2] for c in dests.columns if c.endswith("_x")]
-        dest_x = dests[[c for c in dests.columns if c.endswith("_x")]].values
-        dest_y = dests[[c for c in dests.columns if c.endswith("_y")]].values
-        line_x = dict()
-        line_y = dict()
-        guide_scat = ax.scatter(dest_x[0], dest_y[0], s=anim_config["cell_size"], c="magenta", marker="s", zorder=3)
-        guide_plots = dict()
-
-        for p in players:
-            # color = "tab:red" if p[0] == "H" else "tab:blue"
-            line_x[p] = np.stack([traces[f"{p}_x"].values, dests[f"{p}_x"].values]).T
-            line_y[p] = np.stack([traces[f"{p}_y"].values, dests[f"{p}_y"].values]).T
-            (guide_plots[p],) = ax.plot(line_x[p][0], line_y[p][0], c="purple", lw=1.5, zorder=1)
-
-        return dest_x, dest_y, line_x, line_y, guide_scat, guide_plots
 
     def plot_init(self, ax: axes.Axes, trace_key: str):
         traces = self.trace_dict[trace_key].iloc[:: self.play_speed].copy()
@@ -294,81 +264,77 @@ class Animator:
             self.plot_init(ax, key)
 
         traces = self.trace_dict["main"]
-        annot_y = self.pitch_size[1] + 1
+        text_y = self.pitch_size[1] + 1
 
         if self.bg_heatmaps is not None:
             hm_extent = (0, self.pitch_size[0], 0, self.pitch_size[1])
             hm = ax.imshow(self.bg_heatmaps[0], extent=hm_extent, cmap=cmap, vmin=vmin, vmax=vmax, alpha=0.7)
 
-        if self.dests is not None:
-            dest_x, dest_y, line_x, line_y, guide_scat, guide_plots = Animator.plot_guides(traces, self.dests, ax)
-
         if self.show_times:
             timestamps = traces["timestamp"] if self.sports == "soccer" else traces["time_left"]
             timestamps = timestamps.dt.total_seconds() if isinstance(timestamps.iloc[0], timedelta) else timestamps
-            time_texts = timestamps.apply(lambda x: f"{int(x // 60):02d}:{x % 60:05.2f}").values
-            time_annot = ax.text(
+            timestamps_str = timestamps.apply(lambda x: f"{int(x // 60):02d}:{x % 60:05.2f}").values
+            time_text = ax.text(
                 0,
-                annot_y,
-                time_texts[0],
+                text_y,
+                timestamps_str[0],
                 fontsize=anim_config["fontsize"],
                 ha="left",
                 va="bottom",
             )
-            time_annot.set_animated(True)
+            time_text.set_animated(True)
 
         if self.show_episodes:
-            episode_texts = traces["episode"].apply(lambda x: f"Episode {x}")
-            episode_texts = np.where(episode_texts == "Episode 0", "", episode_texts)
-            annot_x = self.pitch_size[0]
-            episode_annot = ax.text(
-                annot_x,
-                annot_y,
-                episode_texts[0],
+            episodes_str = traces["episode"].apply(lambda x: f"Episode {x}")
+            episodes_str = np.where(episodes_str == "Episode 0", "", episodes_str)
+            text_x = self.pitch_size[0]
+            episode_text = ax.text(
+                text_x,
+                text_y,
+                episodes_str[0],
                 fontsize=anim_config["fontsize"],
                 ha="right",
                 va="bottom",
             )
-            episode_annot.set_animated(True)
+            episode_text.set_animated(True)
 
         if self.show_events:
             assert "event_type" in traces.columns
-            event_texts = traces.apply(lambda x: f"{x['event_type']} by {x['event_player']}", axis=1)
-            event_texts = np.where(event_texts == "nan by nan", "", event_texts)
+            events_str = traces.apply(lambda x: f"{x['event_type']} by {x['player_id']}", axis=1)
+            events_str = np.where(events_str == "nan by nan", "", events_str)
 
-            # elif "event_types" in traces.columns:
-            #     event_texts = traces["event_types"].fillna(method="ffill")
-            #     event_texts = np.where(event_texts.isna(), "", event_texts)
-
-            annot_x = self.pitch_size[0] / 2
-            event_annot = ax.text(
-                annot_x,
-                annot_y,
-                str(event_texts[0]),
+            text_x = self.pitch_size[0] / 2
+            event_text = ax.text(
+                text_x,
+                text_y,
+                str(events_str[0]),
                 fontsize=anim_config["fontsize"],
                 ha="center",
                 va="bottom",
             )
-            event_annot.set_animated(True)
+            event_text.set_animated(True)
 
             if "event_x" in traces.columns:
-                event_args = Animator.plot_events(traces[["event_x", "event_y"]], ax)
+                event_args = Animator.plot_events(traces[["event_x", "event_y"]], ax, color="orange", marker="*")
 
-        if self.annot_cols is not None:
+            if "annot_x" in traces.columns:
+                annot_args = Animator.plot_events(traces[["annot_x", "annot_y"]], ax, color="k", marker="X")
+
+        if self.text_cols is not None:
+            str_dict = {}
             text_dict = {}
-            annot_dict = {}
-            for i, col in enumerate(self.annot_cols):
-                text_dict[col] = f"{col}: " + np.where(traces[col].isna(), "", traces[col].astype(str))
-                annot_x = self.pitch_size[0] * i / 2
-                annot_dict[col] = ax.text(
-                    annot_x,
+            for i, col in enumerate(self.text_cols):
+                str_dict[col] = f"{col}: " + np.where(traces[col].isna(), "", traces[col].astype(str))
+                text_x = self.pitch_size[0] * i / 2
+                text_dict[col] = ax.text(
+                    text_x,
                     -1,
-                    str(text_dict[col][0]),
+                    str(str_dict[col][0]),
                     fontsize=anim_config["fontsize"],
                     ha="left",
                     va="top",
                 )
-                annot_dict[col].set_animated(True)
+                text_dict[col].set_animated(True)
 
         def animate(t):
             for key in self.trace_dict.keys():
@@ -387,25 +353,24 @@ class Animator:
             if self.bg_heatmaps is not None:
                 hm.set_array(self.bg_heatmaps[t])
 
-            if self.dests is not None:
-                guide_scat.set_offsets(np.stack([dest_x[t], dest_y[t]]).T)
-                for p, plot in guide_plots.items():
-                    plot.set_data(line_x[p][t], line_y[p][t])
-
             if self.show_times:
-                time_annot.set_text(str(time_texts[t]))
+                time_text.set_text(str(timestamps_str[t]))
 
             if self.show_episodes:
-                episode_annot.set_text(str(episode_texts[t]))
+                episode_text.set_text(str(episodes_str[t]))
 
             if self.show_events:
-                event_annot.set_text(event_texts[t])
+                event_text.set_text(events_str[t])
+
                 if "event_x" in traces.columns:
                     Animator.animate_events(t, *event_args)
 
-            if self.annot_cols is not None:
-                for col in self.annot_cols:
-                    annot_dict[col].set_text(str(text_dict[col][t]))
+                if "annot_x" in traces.columns:
+                    Animator.animate_events(t, *annot_args)
+
+            if self.text_cols is not None:
+                for col in self.text_cols:
+                    text_dict[col].set_text(str(str_dict[col][t]))
 
         frames = min(max_frames, traces.shape[0])
         anim = animation.FuncAnimation(fig, animate, frames=frames, interval=1000 / fps)
@@ -472,7 +437,7 @@ if __name__ == "__main__":
         aug_events = aug_events[~aug_events.duplicated(subset="frame", keep="first")].drop("utc_timestamp", axis=1)
         aug_events["event_x"] = aug_events.apply(lambda e: tracking.at[e["frame"], "ball_x"], axis=1)
         aug_events["event_y"] = aug_events.apply(lambda e: tracking.at[e["frame"], "ball_y"], axis=1)
-        aug_events.columns = ["period_id", "frame", "event_player", "event_type", "event_x", "event_y"]
+        aug_events.columns = ["period_id", "frame", "player_id", "event_type", "event_x", "event_y"]
 
         merged_df = pd.merge(aug_events, tracking.reset_index(), how="right").set_index("frame")
         merged_df[aug_events.columns[2:]] = merged_df[aug_events.columns[2:]].ffill()
