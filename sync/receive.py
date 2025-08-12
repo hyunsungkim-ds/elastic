@@ -36,7 +36,7 @@ class ReceiveDetector:
         # Define an episode as a sequence of consecutive in-play frames
         time_cols = ["frame_id", "period_id", "timestamp", "utc_timestamp"]
         self.frames = self.tracking[time_cols].drop_duplicates().sort_values("frame_id").set_index("frame_id")
-        self.frames["timestamp"] = self.frames["timestamp"].apply(utils.format_timestamp)
+        self.frames["timestamp"] = self.frames["timestamp"].apply(utils.seconds_to_timestamp)
         self.frames["episode_id"] = 0
         n_prev_episodes = 0
 

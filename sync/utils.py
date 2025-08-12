@@ -6,10 +6,15 @@ import pandas as pd
 from sync.config import PITCH_X, PITCH_Y
 
 
-def format_timestamp(total_seconds: float) -> str:
+def seconds_to_timestamp(total_seconds: float) -> str:
     minutes = int(total_seconds // 60)
     seconds = total_seconds % 60
     return f"{minutes:02d}:{int(seconds):02d}{f'{seconds % 1:.2f}'[1:]}"
+
+
+def timestamp_to_seconds(timestamp: str) -> float:
+    minutes, seconds = timestamp.split(":")
+    return float(minutes) * 60 + float(seconds)
 
 
 def linear_scoring_func(min_input: float, max_input: float, increasing=False) -> Callable:

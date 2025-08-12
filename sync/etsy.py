@@ -42,7 +42,7 @@ class ETSY:
 
         time_cols = ["frame", "period_id", "timestamp", "utc_timestamp"]
         self.frames = self.tracking[time_cols].drop_duplicates().sort_values("frame").set_index("frame")
-        self.frames["timestamp"] = self.frames["timestamp"].apply(utils.format_timestamp)
+        self.frames["timestamp"] = self.frames["timestamp"].apply(utils.seconds_to_timestamp)
 
         # Store synchronization results
         self.last_matched_frame = 0
