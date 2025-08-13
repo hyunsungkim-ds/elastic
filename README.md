@@ -14,11 +14,13 @@ Source code for the paper [ELASTIC: Event-Tracking Data Synchronization in Socce
 
 Instead, ELASTIC leverages more subtle motion features such as ball acceleration and kick distance to precisely detect the moment of pass-like or incoming events, as well as the player-ball distance that ETSY used. Our experimental results demonstrate that it outperforms existing synchronizers by a large margin.
 
-As a visual result, [this video](https://github.com/user-attachments/assets/b24e4270-0d43-4be2-bbcc-2c4e719e9d20) compares the raw event timestamps/locations (black "x" marks) and the synchronized event timestamps/locations (orange stars), alongside player and ball trajectories. You can refer to more details in the [paper](https://dtai.cs.kuleuven.be/events/MLSA25/papers/MLSA25_paper_181.pdf).
-
+As a visual result, [this video](https://github.com/user-attachments/assets/b24e4270-0d43-4be2-bbcc-2c4e719e9d20) compares the raw event timestamps/locations (black "x") and the synchronized event timestamps/locations (orange "★"), alongside player and ball trajectories.
+<p align="center">
+  <img src="docs/sportec_J03WMX_clip.gif"/>
+</p>
 
 ## Getting Started
-You can install ELASTIC and necessary packages with the following commands.
+First, install ELASTIC and necessary packages with the following commands.
 ```
 git clone https://github.com/hyunsungkim-ds/elastic.git
 cd elastic
@@ -37,7 +39,7 @@ ELASTIC consists of four stages:
   <img src="docs/sync_stages.png" width="500" />
 </p>
 
-Using `ELASTIC.plot_window_features` and `ReceiveDetector.plot_window_features`, you can plot features around a given event to see how candidate frames are extracted and the best frame is selected.
+Following `tutorial.ipynb`, you can plot features around a given event to see how candidate frames are extracted and the best frame is selected.
 
 <p align="center">
   <img src="docs/feat_pass.png" width="48%" />
