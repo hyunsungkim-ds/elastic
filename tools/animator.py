@@ -181,7 +181,7 @@ class Animator:
             c=color,
             edgecolors=edgecolor if marker != "x" else None,
             marker=marker,
-            zorder=3,
+            zorder=100,
         )
         return x, y, scat
 

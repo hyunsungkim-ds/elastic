@@ -376,7 +376,7 @@ class SportecData(MatchData):
         for i in events[events["event_type"] == "OtherBallAction"].index:
             team_id = events.at[i, "team_id"]
             player_id = events.at[i, "player_id"]
-            recent_action = events[~events["event_type"].str.contains("Duel")].loc[: i - 1].iloc[-1]
+            recent_action = events[~events["event_type"].str.contains("Duel", na=False)].loc[: i - 1].iloc[-1]
 
             if recent_action["receiver_player_id"] == player_id:
                 if recent_action["event_type"] in ["Pass", "Cross"] and not recent_action["success"]:
