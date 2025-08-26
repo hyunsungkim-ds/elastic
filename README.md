@@ -26,7 +26,7 @@ git clone https://github.com/hyunsungkim-ds/elastic.git
 cd elastic
 pip install -r requirements.txt
 ```
-Then, you can simply follow `tutorial.ipynb` with [Sportec Open DFL Dataset (Bassek et al., 2025)](https://www.nature.com/articles/s41597-025-04505-y). Please refer to the detailed instruction in the notebook.
+Then, you can simply follow `tutorial.ipynb` using [Sportec Open DFL Dataset (Bassek et al., 2025)](https://www.nature.com/articles/s41597-025-04505-y) and [kloppy](https://kloppy.pysport.org) package. Please refer to the detailed instruction in the notebook.
 
 ## Synchronization Stages with Feature Plots
 ELASTIC consists of four stages:

@@ -1,5 +1,6 @@
 fastparquet
 ffmpeg
+kloppy
 matplotlib
 numpy
 pandas
