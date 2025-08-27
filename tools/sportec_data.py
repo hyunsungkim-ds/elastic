@@ -378,21 +378,18 @@ class SportecData(MatchData):
             player_id = events.at[i, "player_id"]
             recent_action = events[~events["event_type"].str.contains("Duel", na=False)].loc[: i - 1].iloc[-1]
 
+            before_a_duel = events.loc[i + 1, ["player_id", "event_type"]] == [player_id, "AerialDuel"]
+            after_a_duel = events.loc[i - 1, ["player_id", "event_type"]] == [player_id, "AerialDuel"]
+            aerial_duel = before_a_duel.all() or after_a_duel.all()
+
             if recent_action["receiver_player_id"] == player_id:
                 if recent_action["event_type"] in ["Pass", "Cross"] and not recent_action["success"]:
-                    events.at[i, "spadl_type"] = "interception"
+                    events.at[i, "spadl_type"] = "clearance" if aerial_duel else "interception"
                     continue
 
                 elif recent_action["event_type"] == "Shot" and not recent_action["success"]:
                     events.at[i, "spadl_type"] = "shot_block"
                     continue
-
-                # If the player is not involved in adjoining ground duels and he/she loses possession
-                adj_duels = events[events["event_type"] == "GroundDuel"].loc[i - 1 : i + 2]
-                if player_id not in adj_duels["player_id"].tolist() + adj_duels["receiver_player_id"].tolist():
-                    if events.at[i + 1, "player_id"] != player_id:
-                        events.at[i, "spadl_type"] = "bad_touch"
-                        continue
 
             if recent_action["event_type"] == "Clearance":
                 events.at[i, "spadl_type"] = "ball_recovery"
@@ -412,7 +409,10 @@ class SportecData(MatchData):
                         continue
 
                     elif recent_action["team_id"] != team_id:
-                        events.at[i, "spadl_type"] = "tackle"
+                        if recent_action["spadl_type"] in ["interception", "clearance"]:
+                            events.at[i, "spadl_type"] = "interception"
+                        else:
+                            events.at[i, "spadl_type"] = "tackle"
                         continue
 
                 # If the player is the loser of the following ground duel
@@ -426,7 +426,18 @@ class SportecData(MatchData):
 
                 # If the player is the winner of the previous ground duel
                 if duel_winner_id == player_id or duel_loser_id == player_id:
-                    events.at[i, "spadl_type"] = "tackle"
+                    if recent_action["spadl_type"] in ["interception", "clearance"]:
+                        events.at[i, "spadl_type"] = "interception"
+                    else:
+                        events.at[i, "spadl_type"] = "tackle"
+                    continue
+
+            # If the player is not involved in adjoining ground duels and he/she loses possession
+            adj_duels = events[events["event_type"] == "GroundDuel"].loc[i - 1 : i + 2]
+            if player_id not in adj_duels["player_id"].tolist() + adj_duels["receiver_player_id"].tolist():
+                if events.at[i + 1, "player_id"] != player_id:
+                    events.at[i, "spadl_type"] = "bad_touch"
+                    continue
 
         always_success = ["interception", "tackle", "dispossessed", "ball_recovery", "shot_block"]
         always_failure = ["foul"]
@@ -439,7 +450,7 @@ class SportecData(MatchData):
         spadl_events = events[events["spadl_type"].notna()].copy()
 
         for i in dependent_events.index:
-            if i == events.index[-1]:
+            if i == spadl_events.index[-1]:
                 events.at[i, "success"] = False
 
             else:
