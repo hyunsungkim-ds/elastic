@@ -14,7 +14,7 @@ Source code for the paper [ELASTIC: Event-Tracking Data Synchronization in Socce
 
 Instead, ELASTIC leverages more subtle motion features such as ball acceleration and kick distance to precisely detect the moment of pass-like or incoming events, as well as the player-ball distance that ETSY used. Our experimental results demonstrate that it outperforms existing synchronizers by a large margin.
 
-As a visual result, [this video](https://github.com/user-attachments/assets/b24e4270-0d43-4be2-bbcc-2c4e719e9d20) compares the raw event timestamps/locations (black "x") and the synchronized event timestamps/locations (orange "★"), alongside player and ball trajectories.
+As a visual result, [this video](https://github.com/user-attachments/assets/525d4c1c-2f73-4247-b1b5-16f36cd1e6af) compares the raw event timestamps/locations (black "x") and the synchronized event timestamps/locations (orange "★"), alongside player and ball trajectories.
 <p align="center">
   <img src="docs/sportec_J03WMX_clip.gif"/>
 </p>
