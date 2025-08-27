@@ -397,12 +397,11 @@ class SportecData(MatchData):
             if events.at[i + 1, "event_type"] == "GroundDuel":
                 duel_winner_id = events.at[i + 1, "player_id"]
                 duel_loser_id = events.at[i + 1, "receiver_player_id"]
+                prev_player_id = events.at[i - 1, "player_id"]
+                prev_event_type = events.at[i - 1, "event_type"]
 
                 # If the player is the winner of the following ground duel
                 if duel_winner_id == player_id:
-                    prev_player_id = events.at[i - 1, "player_id"]
-                    prev_event_type = events.at[i - 1, "event_type"]
-
                     if prev_event_type == "OtherBallAction" and duel_loser_id == prev_player_id:
                         events.at[i - 1, "spadl_type"] = "dispossessed"
                         events.at[i, "spadl_type"] = "tackle"
@@ -418,6 +417,8 @@ class SportecData(MatchData):
                 # If the player is the loser of the following ground duel
                 if duel_loser_id == player_id:
                     events.at[i, "spadl_type"] = "dispossessed"
+                    if prev_event_type == "OtherBallAction" and duel_winner_id == prev_player_id:
+                        events.at[i - 1, "spadl_type"] = "tackle"
                     continue
 
             if events.at[i - 1, "event_type"] == "GroundDuel":

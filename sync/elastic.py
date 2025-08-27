@@ -520,7 +520,7 @@ class ELASTIC:
 
     @staticmethod
     def _detect_setpiece(features: pd.DataFrame, fps=25) -> Tuple[float, pd.DataFrame, None]:
-        cand_features = features[features["player_dist"] < 2]
+        cand_features = features[features["player_dist"] < 3]
         best_frame = cand_features.index[0] if not cand_features.empty else np.nan
         return best_frame, features, None
 
@@ -603,7 +603,7 @@ class ELASTIC:
         ball_y = ball_window["y"].values
 
         features = pd.DataFrame(index=player_window.index)
-        features["frame_delay"] = (features.index.values - event_frame).clip(0)
+        features["frame_delay"] = (features.index.values - event_frame - config.FRAME_DELAY_START * self.fps).clip(0)
         features["player_speed"] = player_window["speed"].values
         features["player_accel"] = player_window["accel_v"].values
         features["ball_accel"] = ball_window["accel_v"].values
@@ -718,18 +718,19 @@ class ELASTIC:
                 self.last_matched_frame = best_frame
                 self.matched_frames.loc[kickoff_idx] = best_frame
 
+                # Adjust the time bias between events and tracking
+                ts_offset = self.events.at[kickoff_idx, "utc_timestamp"] - self.frames.at[best_frame, "utc_timestamp"]
+                self.events.loc[period_events.index, "utc_timestamp"] -= ts_offset
+
             except ValueError:  # If there is no candidate frames for the kickoff, then find the second event
                 kickoff_frame = self.frames[self.frames["period_id"] == period].index[0]
                 self.last_matched_frame = kickoff_frame
                 self.matched_frames.loc[kickoff_idx] = kickoff_frame
 
-                kickoff_idx += 1
-                windows = self._window_of_frames(self.events.loc[kickoff_idx], 5)
-                best_frame = self._find_matching_frame(ELASTIC._detect_pass_like, *windows)[0]
+                # kickoff_idx += 1
+                # windows = self._window_of_frames(self.events.loc[kickoff_idx], 5)
+                # best_frame = self._find_matching_frame(ELASTIC._detect_pass_like, *windows)[0]
 
-            # Adjust the time bias between events and tracking
-            ts_offset = self.events.at[kickoff_idx, "utc_timestamp"] - self.frames.at[best_frame, "utc_timestamp"]
-            self.events.loc[period_events.index, "utc_timestamp"] -= ts_offset
             kickoff_idx = len(self.events[self.events["period_id"] == period])
 
             # STEP 2: Major event synchronization for the current period
@@ -820,8 +821,8 @@ class ELASTIC:
                 features["ball_accel"] = features["ball_accel"] / 5
 
             plt.close("all")
-            plt.rcParams.update({"font.size": 18})
-            plt.figure(figsize=(8, 6))
+            plt.rcParams.update({"font.size": 15})
+            plt.figure(figsize=(8, 4))
 
             colors = {"ball_accel": "tab:orange", "player_dist": "tab:blue"}
             if event_type.endswith("take_on"):
@@ -846,7 +847,7 @@ class ELASTIC:
             elif not pd.isna(best_frame):
                 plt.vlines(best_frame, 0, ymax, color="red", linestyles="-", label="best_frame")
 
-            plt.legend(loc="upper right", fontsize=15)
+            plt.legend(loc="upper right", fontsize=12)
             plt.grid(axis="y")
             plt.xticks(rotation=45)
 

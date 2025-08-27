@@ -204,8 +204,8 @@ class ReceiveDetector:
             features["ball_accel"] = features["ball_accel"] / 5
             features_to_plot = ["closest_dist", "ball_accel", "next_player_dist"]
 
-            plt.rcParams.update({"font.size": 18})
-            plt.figure(figsize=(8, 6))
+            plt.rcParams.update({"font.size": 15})
+            plt.figure(figsize=(8, 4))
             plt.plot(features[features_to_plot], label=features_to_plot)
 
             ymax = 25
@@ -219,7 +219,7 @@ class ReceiveDetector:
             elif not pd.isna(best_frame):
                 plt.vlines(best_frame, 0, ymax, color="red", linestyles="-", label="best_frame")
 
-            plt.legend(loc="upper right", fontsize=15)
+            plt.legend(loc="upper right", fontsize=12)
             plt.grid(axis="y")
             plt.xticks(rotation=45)
 
