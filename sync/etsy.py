@@ -40,8 +40,8 @@ class ETSY:
         self.tracking = tracking
         self.fps = fps
 
-        time_cols = ["frame", "period_id", "timestamp", "utc_timestamp"]
-        self.frames = self.tracking[time_cols].drop_duplicates().sort_values("frame").set_index("frame")
+        time_cols = ["frame_id", "period_id", "timestamp", "utc_timestamp"]
+        self.frames = self.tracking[time_cols].drop_duplicates().sort_values("frame_id").set_index("frame_id")
         self.frames["timestamp"] = self.frames["timestamp"].apply(utils.seconds_to_timestamp)
 
         # Store synchronization results
@@ -66,12 +66,12 @@ class ETSY:
         if kickoff_event["spadl_type"] != "pass":
             raise Exception("First event is not a pass!")
 
-        frame = self.tracking.loc[self.tracking["period_id"] == period, "frame"].min()
+        frame = self.tracking.loc[self.tracking["period_id"] == period, "frame_id"].min()
         frames_to_check = np.arange(frame, frame + self.fps * config.TIME_KICKOFF)
         kickoff_player = kickoff_event["player_id"]
 
         inside_center_circle = self.tracking[
-            (self.tracking["frame"] == frame)
+            (self.tracking["frame_id"] == frame)
             & (self.tracking["player_id"].str.startswith(kickoff_player.split("_")[0]))
             & (self.tracking["x"] >= config.PITCH_X / 2 - 5)
             & (self.tracking["x"] <= config.PITCH_X / 2 + 5)
@@ -83,7 +83,7 @@ class ETSY:
             raise ValueError
 
         ball_window: pd.DataFrame = self.tracking[
-            (self.tracking["frame"].isin(frames_to_check))
+            (self.tracking["frame_id"].isin(frames_to_check))
             & (self.tracking["period_id"] == period)
             & self.tracking["ball"]
             & (self.tracking["x"] >= config.PITCH_X / 2 - 3)
@@ -91,18 +91,18 @@ class ETSY:
             & (self.tracking["y"] >= config.PITCH_Y / 2 - 3)
             & (self.tracking["y"] <= config.PITCH_Y / 2 + 3)
         ]
-        ball_window = ball_window[(ball_window["frame"].diff() > 1).astype(int).cumsum() < 1].set_index("frame")
+        ball_window = ball_window[(ball_window["frame_id"].diff() > 1).astype(int).cumsum() < 1].set_index("frame_id")
 
         if ball_window.empty:
             print("The tracking data begins after kickoff!")
             raise ValueError
 
         player_window: pd.DataFrame = self.tracking[
-            (self.tracking["frame"].isin(frames_to_check))
+            (self.tracking["frame_id"].isin(frames_to_check))
             & (self.tracking["period_id"] == period)
             & (self.tracking["player_id"] == kickoff_player)
         ]
-        player_window = player_window.set_index("frame").loc[ball_window.index]
+        player_window = player_window.set_index("frame_id").loc[ball_window.index]
 
         player_x = player_window["x"].values
         player_y = player_window["y"].values
@@ -116,7 +116,7 @@ class ETSY:
         else:
             best_idx = ball_window["accel_s"].values[dist_idxs].argmax()
 
-        return player_window.reset_index()["frame"].iloc[best_idx]
+        return player_window.reset_index()["frame_id"].iloc[best_idx]
 
     def _window_of_frames(
         self, event: pd.Series, s: int = 5, min_frame: int = 0
@@ -149,9 +149,9 @@ class ETSY:
 
         # Select all player and ball frames within window range
         cand_frames = [t for t in cand_frames if t >= min_frame]
-        window = self.tracking[self.tracking["frame"].isin(cand_frames)].copy()
-        player_window: pd.DataFrame = window[window["player_id"] == event["player_id"]].set_index("frame")
-        ball_window: pd.DataFrame = window[window["ball"]].set_index("frame")
+        window = self.tracking[self.tracking["frame_id"].isin(cand_frames)].copy()
+        player_window: pd.DataFrame = window[window["player_id"] == event["player_id"]].set_index("frame_id")
+        ball_window: pd.DataFrame = window[window["ball"]].set_index("frame_id")
 
         window_idxs = player_window.index.intersection(ball_window.index)
         player_window = player_window.loc[window_idxs].copy()
@@ -314,8 +314,8 @@ class ETSY:
             # Event synchronization for the current period
             self._sync_period_events(period)
 
-        self.events["frame"] = self.matched_frames
-        self.events["synced_ts"] = self.events["frame"].map(self.frames["timestamp"].to_dict())
+        self.events["frame_id"] = self.matched_frames
+        self.events["synced_ts"] = self.events["frame_id"].map(self.frames["timestamp"].to_dict())
 
     def plot_window_features(self, event_idx: int, display_title: bool = True, save_path: str = None) -> pd.DataFrame:
         """
@@ -367,30 +367,34 @@ class ETSY:
             features["ball_accel"] = features["ball_accel_s"] / 5
 
             plt.close("all")
-            plt.rcParams.update({"font.size": 18})
-            plt.figure(figsize=(8, 6))
+            plt.rcParams.update({"font.size": 15})
+            plt.figure(figsize=(10, 5))
 
-            colors = {
-                "ball_accel": "tab:orange",
-                "player_ball_dist": "tab:blue",
-                "player_event_dist": "tab:green",
-                "ball_event_dist": "tab:purple",
-            }
-            for feat, color in colors.items():
-                plt.plot(features[feat], label=feat, c=color)
+            # colors = {
+            #     "ball_accel": "tab:orange",
+            #     "player_ball_dist": "tab:blue",
+            #     "player_event_dist": "tab:green",
+            #     "ball_event_dist": "tab:purple",
+            # }
+            # for feat, color in colors.items():
+            #     plt.plot(features[feat], label=feat, c=color)
+
+            plt.plot(features["player_ball_dist"], label="player-ball dist.", color="tab:blue")
+            plt.plot(features["player_event_dist"], label="player-event dist.", color="tab:green")
+            plt.plot(features["ball_event_dist"], label="event-ball dist.", color="tab:purple")
 
             ymax = 25
             plt.xticks()
             plt.ylim(0, ymax)
             # plt.vlines(windows[0], 0, ymax, color="k", linestyles="-", label="annot_frame")
 
-            if isinstance(cand_features, pd.DataFrame):
-                cand_frames = [t for t in cand_features.index if t != best_frame]
-                plt.vlines(cand_frames, 0, ymax, color="black", linestyles="--", label="cand_frame")
-                plt.vlines(best_frame, 0, ymax, color="red", linestyles="-", label="best_frame")
+            # if isinstance(cand_features, pd.DataFrame):
+            #     cand_frames = [t for t in cand_features.index if t != best_frame]
+            #     plt.vlines(cand_frames, 0, ymax, color="black", linestyles="--", label="cand_frame")
+            #     plt.vlines(best_frame, 0, ymax, color="red", linestyles="-", label="best_frame")
 
-            elif not pd.isna(best_frame):
-                plt.vlines(best_frame, 0, ymax, color="red", linestyles="-", label="best_frame")
+            # elif not pd.isna(best_frame):
+            #     plt.vlines(best_frame, 0, ymax, color="red", linestyles="-", label="best_frame")
 
             plt.legend(loc="upper right", fontsize=15)
             plt.grid(axis="y")
