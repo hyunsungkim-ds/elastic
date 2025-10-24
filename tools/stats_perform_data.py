@@ -29,7 +29,7 @@ class StatsPerformData(MatchData):
             "spadl_type": object,
             "start_x": float,
             "start_y": float,
-            "outcome": bool,
+            "success": bool,
             "offside": bool,
             "aerial": bool,
             "expected_goal": float,
@@ -37,7 +37,7 @@ class StatsPerformData(MatchData):
         self.events = self.events[event_dtypes.keys()].astype(event_dtypes)
 
         # Filter out failed tackles
-        failed_tackle_mask = (self.events["spadl_type"] == "tackle") & ~self.events["outcome"]
+        failed_tackle_mask = (self.events["spadl_type"] == "tackle") & ~self.events["success"]
         self.events = self.events[~failed_tackle_mask].copy().reset_index(drop=True)
 
         self.tracking = self.tracking.copy().sort_values(["period_id", "timestamp"], ignore_index=True)
@@ -114,16 +114,8 @@ class StatsPerformData(MatchData):
         if "timestamp" not in self.events.columns or "object_id" not in self.events.columns:
             self.refine_events()
 
-        column_mapping = {
-            "period_id": "period_id",
-            "utc_timestamp": "utc_timestamp",
-            "object_id": "player_id",
-            "spadl_type": "spadl_type",
-            "start_x": "start_x",
-            "start_y": "start_y",
-            "outcome": "success",
-        }
-        return self.events[column_mapping.keys()].copy().rename(columns=column_mapping)
+        input_cols = ["period_id", "utc_timestamp", "object_id", "spadl_type", "start_x", "start_y", "success"]
+        return self.events[input_cols].rename(columns={"object_id": "player_id"}).copy()
 
 
 def find_spadl_event_types(events: pd.DataFrame, sort=True) -> pd.DataFrame:
@@ -131,13 +123,14 @@ def find_spadl_event_types(events: pd.DataFrame, sort=True) -> pd.DataFrame:
         events.sort_values(["stats_perform_match_id", "utc_timestamp"], ignore_index=True, inplace=True)
 
     events["spadl_type"] = None
+    events["success"] = events["outcome"].copy()
     events["offside"] = False
     events[["cross", "penalty"]] = events[["cross", "penalty"]].astype(bool)
 
     # Pass-like: pass, cross
     events.loc[(events["action_type"].str.contains("pass")) & events["cross"], "spadl_type"] = "cross"
     events.loc[(events["action_type"].str.contains("pass")) & ~events["cross"], "spadl_type"] = "pass"
-    events.loc[events["action_type"].str.contains("_pass"), "outcome"] = False
+    events.loc[events["action_type"].str.contains("_pass"), "success"] = False
     events.loc[events["action_type"] == "offside_pass", "offside"] = True
 
     # Foul and set-piece: foul, freekick_{crossed|short}, corner_{crossed|short}, goalkick
@@ -156,7 +149,7 @@ def find_spadl_event_types(events: pd.DataFrame, sort=True) -> pd.DataFrame:
     events.loc[(events["action_type"] == "goal_attempt") & ~events["penalty"], "spadl_type"] = "shot"
     events.loc[(events["action_type"] == "goal_attempt") & events["penalty"], "spadl_type"] = "shot_penalty"
     events.loc[is_freekick & events["expected_goal"].notna(), "spadl_type"] = "shot_freekick"
-    events.loc[events["spadl_type"].isin(["shot", "shot_freekick", "shot_penalty"]), "outcome"] = False
+    events.loc[events["spadl_type"].isin(["shot", "shot_freekick", "shot_penalty"]), "success"] = False
 
     is_inside_center: pd.Series = (
         (events["start_x"] >= config.PITCH_X / 2 - 3)
@@ -168,14 +161,14 @@ def find_spadl_event_types(events: pd.DataFrame, sort=True) -> pd.DataFrame:
         (events["spadl_type"].isin(["shot", "shot_freekick", "shot_penalty"]))
         & (events["period_id"].shift(-1) == events["period_id"])
         & (is_inside_center.shift(-1)),
-        "outcome",
+        "success",
     ] = True
     events.loc[
         (events["spadl_type"].isin(["shot", "shot_freekick"]))
         & (events["action_type"].shift(-1) == "attempted_tackle")
         & (events["period_id"].shift(-2) == events["period_id"])
         & (is_inside_center.shift(-2)),
-        "outcome",
+        "success",
     ] = True
 
     # Duel-like: aerial, tackle, bad_touch
@@ -183,7 +176,7 @@ def find_spadl_event_types(events: pd.DataFrame, sort=True) -> pd.DataFrame:
     events["aerial"] = False
     events.loc[is_aerial, "aerial"] = True
     events.loc[events["action_type"] == "attempted_tackle", "spadl_type"] = "tackle"
-    events.loc[events["action_type"] == "attempted_tackle", "outcome"] = False
+    events.loc[events["action_type"] == "attempted_tackle", "success"] = False
     events.loc[events["action_type"] == "ball_touch", "spadl_type"] = "bad_touch"
 
     # Keeper actions: keeper_{save|claim|punch|pick_up|sweeper}
