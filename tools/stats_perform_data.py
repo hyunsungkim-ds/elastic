@@ -97,6 +97,16 @@ class StatsPerformData(MatchData):
         lineup, events = StatsPerformData.find_object_ids(lineup, events, tracking)
         events = StatsPerformData.align_event_orientations(events, tracking)
 
+        # Drop invalid passes to oneself
+        pass_types = ["pass", "cross", "freekick_short", "freekick_crossed"] + config.SET_PIECE_OOP
+        pass_mask = events["spadl_type"].isin(pass_types)
+        short_mask = events["utc_timestamp"].diff().shift(-1).dt.total_seconds() < 5
+        same_poss_mask = events["player_id"] == events["player_id"].shift(-1)
+        same_period_mask = events["period_id"] == events["period_id"].shift(-1)
+
+        invalid_pass_mask = pass_mask & short_mask & same_poss_mask & same_period_mask
+        events = events[~invalid_pass_mask].reset_index(drop=True).copy()
+
         self.lineup = lineup
         self.events = events
 
