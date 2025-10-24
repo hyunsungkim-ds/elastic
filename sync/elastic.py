@@ -352,8 +352,13 @@ class ELASTIC:
 
         else:
             for i, frame in enumerate(cand_features.index):
-                prev_frame = cand_features.index[i - 1] if i > 0 else features.index[0]
-                cand_features.at[frame, "kick_dist"] = features["player_dist"].loc[prev_frame:frame].max()
+                if i == 0:
+                    prev_frame = features.index[0]
+                    kick_dist = max(features["player_dist"].loc[prev_frame:frame].max(), 5)
+                else:
+                    prev_frame = cand_features.index[i - 1]
+                    kick_dist = features["player_dist"].loc[prev_frame:frame].max()
+                cand_features.at[frame, "kick_dist"] = kick_dist
 
             cand_features["score"] = utils.score_frames_major(cand_features)
             return cand_features["score"].idxmax(), features, cand_features
@@ -443,7 +448,7 @@ class ELASTIC:
             cand_features.at[i, "ball_height"] = features.loc[i - 3 : i + 3, "ball_height"].min()
             cand_features.at[i, "ball_accel"] = features.loc[i - 3 : i + 3, "ball_accel"].max()
 
-        cand_features = cand_features[(cand_features["player_dist"] < 1) & (cand_features["ball_height"] < 2)]
+        cand_features = cand_features[(cand_features["player_dist"] < 1.5) & (cand_features["ball_height"] < 2)]
 
         if len(cand_features.index) == 0:
             return np.nan, features, None
