@@ -202,7 +202,9 @@ class ELASTIC:
 
         # Select all player and ball frames within window range
         cand_frames = [t for t in cand_frames if t >= min_frame and t <= max_frame]
-        window = self.tracking[self.tracking["frame_id"].isin(cand_frames)].copy()
+        mask = (self.tracking["period_id"] == event["period_id"]) & (self.tracking["frame_id"].isin(cand_frames))
+        window = self.tracking[mask].copy()
+
         player_window: pd.DataFrame = window[window["player_id"] == player_id].set_index("frame_id")
         ball_window: pd.DataFrame = window[window["ball"]].set_index("frame_id")
 

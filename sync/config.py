@@ -48,7 +48,7 @@ TIME_PASS_LIKE_OPEN = 10  # Stats Perform: 5, Sportec: 10 (seconds)
 TIME_SET_PIECE = 15  # Stats Perform: 15, Sportec: 15 (seconds)
 TIME_INCOMING = 10  # Stats Perform: 5, Sportec: 10 (seconds)
 TIME_MINOR = 10  # Stats Perform: 5, Sportec: 10 (seconds)
-FRAME_DELAY_START = -1  # Stats Perform: 0, Sportec: -1 (seconds)
+FRAME_DELAY_START = 0  # Stats Perform: 0, Sportec: -1 (seconds)
 
 # Additional event categories and parameters for ETSY
 BAD_TOUCH = ["bad_touch"]
@@ -59,7 +59,7 @@ TIME_BAD_TOUCH = 5
 TIME_FAULT_LIKE = 5
 
 EVENT_COLS = [
-    "frame",
+    "frame_id",
     "period_id",
     "synced_ts",
     "utc_timestamp",
