@@ -12,10 +12,36 @@ from sync import config, elastic
 from tools.stats_perform_data import StatsPerformData, find_spadl_event_types
 
 if __name__ == "__main__":
-    lineups = pd.read_parquet(config.LINEUP_PATH)
-    events = pd.read_parquet(config.EVENT_PATH)
-    events["utc_timestamp"] = pd.to_datetime(events["utc_timestamp"])
+    LINEUP_PATH = "data/ajax/lineup/line_up_v3.parquet"
+    EVENT_PATH = "data/ajax/event/event_v3.parquet"
+    TRACKING_DIR = "data/ajax/tracking_v3"
+
+    lineups = pd.read_parquet(LINEUP_PATH)
+    events = pd.read_parquet(EVENT_PATH)
+    events["utc_timestamp"] = pd.to_datetime(events["time_stamp"])
+    events["game_date"] = events["utc_timestamp"].dt.date
     events = events.sort_values(["stats_perform_match_id", "utc_timestamp"], ignore_index=True)
+
+    # Remove invalid matches with multiple dates
+    match_dates = events[["stats_perform_match_id", "game_date"]].drop_duplicates()
+    match_counts = match_dates["stats_perform_match_id"].value_counts()
+    valid_matches = match_counts[match_counts == 1].index
+    events = events[events["stats_perform_match_id"].isin(valid_matches)].copy()
+    lineups = lineups[lineups["stats_perform_match_id"].isin(valid_matches)].copy()
+
+    # Find necessary attributes for data preprocessing
+    player_positions = lineups[["stats_perform_match_id", "player_id", "advanced_position"]].copy()
+    events = pd.merge(events, player_positions)
+    events = find_spadl_event_types(events)
+
+    match_dates = events[["stats_perform_match_id", "game_date"]].drop_duplicates()
+    match_dates = match_dates.set_index("stats_perform_match_id")["game_date"].to_dict()
+    lineups["game_date"] = lineups["stats_perform_match_id"].map(match_dates)
+
+    lineups_old = pd.read_parquet(config.LINEUP_PATH)
+    team_names = lineups_old[["contestant_id", "contestant_name"]].drop_duplicates()
+    team_names = team_names.set_index("contestant_id")["contestant_name"].to_dict()
+    lineups["contestant_name"] = lineups["contestant_id"].map(team_names)
 
     # Find SPADL-style event types
     events = find_spadl_event_types(events)
@@ -27,10 +53,13 @@ if __name__ == "__main__":
     erroneous_matches = []
 
     for i, match_id in enumerate(match_ids):
-        if not os.path.exists(f"{config.TRACKING_DIR}/{match_id}.parquet"):
+        tracking_path = f"{TRACKING_DIR}/{match_id}_new.parquet"
+        output_path = f"{config.OUTPUT_DIR}/{match_id}.csv"
+
+        if not os.path.exists(tracking_path) and os.path.exists(output_path):
             continue
 
-        match_tracking = pd.read_parquet(f"{config.TRACKING_DIR}/{match_id}.parquet")
+        match_tracking = pd.read_parquet(f"{TRACKING_DIR}/{match_id}_new.parquet")
         match_lineup = lineups.loc[lineups["stats_perform_match_id"] == match_id].set_index("player_id")
         match_events = events[
             (events["stats_perform_match_id"] == match_id)
@@ -40,7 +69,7 @@ if __name__ == "__main__":
 
         try:
             match_date = match_events["game_date"].iloc[0]
-            match_name = match_events["game"].iloc[0]
+            match_name = " vs ".join(match_lineup["contestant_name"].unique())
             print(f"\n[{i}] {match_id}: {match_name} on {match_date}")
         except IndexError:
             print(f"\n[{i}] {match_id}: No match date or name found in the event data.")
@@ -52,14 +81,13 @@ if __name__ == "__main__":
         input_tracking = match.format_tracking_for_syncer()
 
         # Applying ELASTIC to synchronize the event and tracking data
-        output_path = f"{config.OUTPUT_DIR}/{match_id}.csv"
         try:
             syncer = elastic.ELASTIC(input_events, input_tracking)
             syncer.run()
         except SchemaError:
             if os.path.exists(output_path):
                 os.remove(output_path)
-            erroneous_matches.append(f"[{i}] {match_id}")
+            erroneous_matches.append(f"[{i}] {match_id}: {match_name} on {match_date}")
             print("Synchronization for this match was skipped due to potential errors.")
             continue
 
@@ -67,9 +95,9 @@ if __name__ == "__main__":
         match.events[config.NEXT_EVENT_COLS] = syncer.events[config.NEXT_EVENT_COLS]
         output_events = match.events[config.EVENT_COLS + config.NEXT_EVENT_COLS]
 
-        synced_events = match.events[match.events["frame"].notna()]
+        synced_events = match.events[match.events["frame_id"].notna()]
         last_synced_event = synced_events.iloc[-1]
-        last_synced_episode = syncer.frames.at[last_synced_event["frame"], "episode_id"]
+        last_synced_episode = syncer.frames.at[last_synced_event["frame_id"], "episode_id"]
 
         if last_synced_episode >= syncer.frames["episode_id"].max() - 1:
             output_events = output_events.loc[: last_synced_event.name]
