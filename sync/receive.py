@@ -95,6 +95,7 @@ class ReceiveDetector:
 
         next_type = self.events.at[event_idx, "next_type"]
         next_event_frame = self.events.loc[event_idx + 1 :, "frame_id"].dropna().min()
+        next_episode_id = self.frames.at[next_event_frame, "episode_id"] if not pd.isna(next_event_frame) else np.nan
 
         if not pd.isna(next_event_frame):
             max_frame = min(max_frame, next_event_frame)
@@ -111,7 +112,11 @@ class ReceiveDetector:
             # Scoring a goal
             return episode_last_frame, "goal", None, None
 
-        elif next_type in config.INCOMING + ["shot_block", "keeper_punch"] and not pd.isna(next_event_frame):
+        elif (
+            next_episode_id == episode_id
+            and next_type in config.INCOMING + ["shot_block", "keeper_punch"]
+            and not pd.isna(next_event_frame)
+        ):
             # The next event is already a receive event
             return next_event_frame, self.events.at[event_idx, "next_player_id"], None, None
 
@@ -193,7 +198,7 @@ class ReceiveDetector:
         next_player = self.events.at[pass_idx, "next_player_id"]
         print(f"Next event: {next_type} by {next_player}")
 
-        if best_frame is not None and best_frame == best_frame:
+        if not pd.isna(best_frame):
             matched_period = self.frames.at[best_frame, "period_id"]
             matched_time = self.frames.at[best_frame, "timestamp"]
             print(f"\nDetected receiver: {receiver}")
@@ -223,7 +228,7 @@ class ReceiveDetector:
             plt.grid(axis="y")
             plt.xticks(rotation=45)
 
-            if display_title:
+            if display_title and not pd.isna(best_frame):
                 plt.title(f"receive at frame {int(best_frame)}")
 
             if save_path is not None:
