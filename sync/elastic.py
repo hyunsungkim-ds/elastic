@@ -24,8 +24,8 @@ class ELASTIC:
         Event data to synchronize, according to schema sync.schema.event_schema.
     tracking: pd.DataFrame
         Tracking data to synchronize, according to schema sync.schema.tracking_schema.
-    fps: int
-        Recording frequency (frames per second) of the tracking data.
+    args : dict, optional
+        Configuration arguments including 'fps' and 'post_sync_types'.
     """
 
     def __init__(self, events: pd.DataFrame, tracking: pd.DataFrame, args: dict = None) -> None:

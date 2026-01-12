@@ -30,13 +30,23 @@ def linear_scoring_func(min_input: float, max_input: float, increasing=False) ->
 
 
 # Scoring functions for ELASTIC
-player_dist_func = linear_scoring_func(0, 3, increasing=False)
+player_dist_func = linear_scoring_func(1, 3, increasing=False)
 player_speed_func = linear_scoring_func(0, 5, increasing=True)
 player_accel_func = linear_scoring_func(0, 5, increasing=True)
 ball_accel_func = linear_scoring_func(0, 20, increasing=True)
 kick_dist_func = linear_scoring_func(0, 5, increasing=True)
 angle_change_func = linear_scoring_func(-1, 1, increasing=False)  # increasing from 0 to pi in radian
 frame_delay_func = linear_scoring_func(0, 125, increasing=False)
+
+
+def score_nw(features_row: pd.Series, player_id: str, kick_dist_col: str) -> float:
+    if features_row["player_id"] == player_id:
+        ball_accel_score = 100 / 3 * ball_accel_func(features_row["ball_accel"])
+        player_dist_score = 100 / 3 * player_dist_func(features_row["player_dist"])
+        kick_dist_score = 100 / 3 * kick_dist_func(features_row[kick_dist_col])
+        return ball_accel_score + player_dist_score + kick_dist_score
+    else:
+        return 0.0
 
 
 def score_frames_major(features: pd.DataFrame) -> np.ndarray:
