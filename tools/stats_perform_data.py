@@ -160,6 +160,7 @@ def find_spadl_event_types(events: pd.DataFrame, sort=True) -> pd.DataFrame:
     events.loc[
         (events["spadl_type"].isin(["shot", "shot_freekick", "shot_penalty"]))
         & (events["period_id"].shift(-1) == events["period_id"])
+        & (events["contestant_id"].shift(-1) != events["contestant_id"])
         & (is_inside_center.shift(-1)),
         "success",
     ] = True
@@ -167,6 +168,7 @@ def find_spadl_event_types(events: pd.DataFrame, sort=True) -> pd.DataFrame:
         (events["spadl_type"].isin(["shot", "shot_freekick"]))
         & (events["action_type"].shift(-1) == "attempted_tackle")
         & (events["period_id"].shift(-2) == events["period_id"])
+        & (events["contestant_id"].shift(-2) != events["contestant_id"])
         & (is_inside_center.shift(-2)),
         "success",
     ] = True
