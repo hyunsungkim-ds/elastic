@@ -33,7 +33,7 @@ anim_config = {
 class Animator:
     def __init__(
         self,
-        trace_dict: Dict[str, pd.DataFrame] = None,
+        track_dict: Dict[str, pd.DataFrame] = None,
         bg_heatmaps: np.ndarray = None,
         player_sizes: np.ndarray = None,
         show_times=True,
@@ -45,7 +45,7 @@ class Animator:
         small_image=False,
         play_speed=1,
     ):
-        self.trace_dict = trace_dict
+        self.track_dict = track_dict
         self.bg_heatmaps = bg_heatmaps
         self.sizes = player_sizes
 
@@ -65,22 +65,22 @@ class Animator:
 
     @staticmethod
     def plot_players(
-        traces: pd.DataFrame,
+        tracking: pd.DataFrame,
         ax: axes.Axes,
         sizes=750,
         alpha=1,
         anonymize=False,
     ):
-        if len(traces.columns) == 0:
+        if len(tracking.columns) == 0:
             return None
 
-        color = "tab:red" if traces.columns[0].startswith("home_") else "tab:blue"
-        x = traces[traces.columns[0::2]].values
-        y = traces[traces.columns[1::2]].values
+        color = "tab:red" if tracking.columns[0].startswith("home_") else "tab:blue"
+        x = tracking[tracking.columns[0::2]].values
+        y = tracking[tracking.columns[1::2]].values
         size = sizes[0, 0] if isinstance(sizes, np.ndarray) else sizes
         scat = ax.scatter(x[0], y[0], s=size, c=color, alpha=alpha, zorder=2)
 
-        players = [c[:-2] for c in traces.columns[0::2]]
+        players = [c[:-2] for c in tracking.columns[0::2]]
         player_dict = dict(zip(players, np.arange(len(players)) + 1))
         plots = dict()
         annots = dict()
@@ -91,7 +91,7 @@ class Animator:
             player_id = player_dict[p] if anonymize else int(p.split("_")[-1])
             annots[p] = ax.annotate(
                 player_id,
-                xy=traces.loc[0, [f"{p}_x", f"{p}_y"]],
+                xy=tracking.loc[0, [f"{p}_x", f"{p}_y"]],
                 ha="center",
                 va="center",
                 color="w",
@@ -102,20 +102,20 @@ class Animator:
             )
             annots[p].set_animated(True)
 
-        return traces, sizes, scat, plots, annots
+        return tracking, sizes, scat, plots, annots
 
     @staticmethod
     def animate_players(
         t: int,
         inplay_records: pd.DataFrame,
-        traces: pd.DataFrame,
+        tracking: pd.DataFrame,
         sizes: np.ndarray,
         scat: collections.PatchCollection,
         plots: Dict[str, lines.Line2D],
         annots: Dict[str, text.Annotation],
     ):
-        x = traces[traces.columns[0::2]].values
-        y = traces[traces.columns[1::2]].values
+        x = tracking[tracking.columns[0::2]].values
+        y = tracking[tracking.columns[1::2]].values
         scat.set_offsets(np.stack([x[t], y[t]]).T)
 
         if isinstance(sizes, np.ndarray):
@@ -128,8 +128,8 @@ class Animator:
             if t >= inplay_start:
                 if t <= inplay_end:
                     t_from = max(t - anim_config["player_history"] + 1, inplay_start)
-                    plots[p].set_data(traces.loc[t_from:t, f"{p}_x"], traces.loc[t_from:t, f"{p}_y"])
-                    annots[p].set_position(traces.loc[t, [f"{p}_x", f"{p}_y"]].values)
+                    plots[p].set_data(tracking.loc[t_from:t, f"{p}_x"], tracking.loc[t_from:t, f"{p}_y"])
+                    annots[p].set_position(tracking.loc[t, [f"{p}_x", f"{p}_y"]].values)
                 elif t == inplay_end + 1:
                     plots[p].set_alpha(0)
                     annots[p].set_alpha(0)
@@ -189,31 +189,31 @@ class Animator:
     def animate_events(t: int, x: np.ndarray, y: np.ndarray, scat: collections.PatchCollection):
         scat.set_offsets(np.array([x[t], y[t]]))
 
-    def plot_init(self, ax: axes.Axes, trace_key: str):
-        traces = self.trace_dict[trace_key].iloc[:: self.play_speed].copy()
-        traces = traces.dropna(axis=1, how="all").reset_index(drop=True)
-        xy_cols = [c for c in traces.columns if c.endswith("_x") or c.endswith("_y")]
+    def plot_init(self, ax: axes.Axes, track_key: str):
+        tracking = self.track_dict[track_key].iloc[:: self.play_speed].copy()
+        tracking = tracking.dropna(axis=1, how="all").reset_index(drop=True)
+        xy_cols = [c for c in tracking.columns if c.endswith("_x") or c.endswith("_y")]
 
         if self.rotate_pitch:
-            traces[xy_cols[0::2]] = self.pitch_size[0] - traces[xy_cols[0::2]]
-            traces[xy_cols[1::2]] = self.pitch_size[1] - traces[xy_cols[1::2]]
+            tracking[xy_cols[0::2]] = self.pitch_size[0] - tracking[xy_cols[0::2]]
+            tracking[xy_cols[1::2]] = self.pitch_size[1] - tracking[xy_cols[1::2]]
 
         inplay_records = []
         for c in xy_cols[::2]:
-            inplay_index = traces[traces[c].notna()].index
+            inplay_index = tracking[tracking[c].notna()].index
             inplay_records.append([c[:-2], inplay_index[0], inplay_index[-1]])
         inplay_records = pd.DataFrame(inplay_records, columns=["object", "start_index", "end_index"])
 
-        home_traces = traces[[c for c in xy_cols if c.startswith("home_")]].fillna(-100)
-        away_traces = traces[[c for c in xy_cols if c.startswith("away_")]].fillna(-100)
+        home_tracking = tracking[[c for c in xy_cols if c.startswith("home_")]].fillna(-100)
+        away_tracking = tracking[[c for c in xy_cols if c.startswith("away_")]].fillna(-100)
 
-        if trace_key == "main" and self.sizes is not None:
+        if track_key == "main" and self.sizes is not None:
             if self.sizes.shape[1] == 2:  # team_poss
                 sizes = self.sizes.fillna(0.5).values[(self.play_speed - 1) :: self.play_speed]
-                home_sizes = np.repeat(sizes[:, [0]] * 500 + 500, home_traces.shape[1], axis=1)
-                away_sizes = np.repeat(sizes[:, [1]] * 500 + 500, away_traces.shape[1], axis=1)
+                home_sizes = np.repeat(sizes[:, [0]] * 500 + 500, home_tracking.shape[1], axis=1)
+                away_sizes = np.repeat(sizes[:, [1]] * 500 + 500, away_tracking.shape[1], axis=1)
             else:  # player_poss
-                n_players = home_traces.shape[1] // 2
+                n_players = home_tracking.shape[1] // 2
                 sizes = self.sizes.dropna(axis=1, how="all")
                 sizes = sizes.fillna(1 / sizes.shape[1]).values[(self.play_speed - 1) :: self.play_speed]
                 home_sizes = sizes[:, :n_players] * 1500 + 500
@@ -223,23 +223,23 @@ class Animator:
             home_sizes = anim_config["player_size"]
             away_sizes = anim_config["player_size"]
 
-        alpha = 1 if trace_key == "main" else 0.5
-        home_args = self.plot_players(home_traces, ax, home_sizes, alpha, self.anonymize)
-        away_args = self.plot_players(away_traces, ax, away_sizes, alpha, self.anonymize)
+        alpha = 1 if track_key == "main" else 0.5
+        home_args = self.plot_players(home_tracking, ax, home_sizes, alpha, self.anonymize)
+        away_args = self.plot_players(away_tracking, ax, away_sizes, alpha, self.anonymize)
 
         ball_args = None
-        if "ball_x" in traces.columns and traces["ball_x"].notna().any():
-            ball_xy = traces[["ball_x", "ball_y"]]
-            if trace_key == "main":
+        if "ball_x" in tracking.columns and tracking["ball_x"].notna().any():
+            ball_xy = tracking[["ball_x", "ball_y"]]
+            if track_key == "main":
                 if self.sports == "soccer":
                     ball_args = Animator.plot_ball(ball_xy, ax, "w", "k", "o")
                 else:
                     ball_args = Animator.plot_ball(ball_xy, ax, "darkorange", "k", "o")
             else:
-                ball_args = Animator.plot_ball(ball_xy, ax, trace_key, None, "*")
+                ball_args = Animator.plot_ball(ball_xy, ax, track_key, None, "*")
 
-        self.trace_dict[trace_key] = traces
-        self.arg_dict[trace_key] = {
+        self.track_dict[track_key] = tracking
+        self.arg_dict[track_key] = {
             "inplay_records": inplay_records.set_index("object"),
             "home": home_args,
             "away": away_args,
@@ -260,10 +260,10 @@ class Animator:
             court = plt.imread("images/bball_court.png")
             ax.imshow(court, zorder=0, extent=[0, self.pitch_size[0], self.pitch_size[1], 0])
 
-        for key in self.trace_dict.keys():
+        for key in self.track_dict.keys():
             self.plot_init(ax, key)
 
-        traces = self.trace_dict["main"]
+        main_tracking = self.track_dict["main"]
         text_y = self.pitch_size[1] + 1
 
         if self.bg_heatmaps is not None:
@@ -271,7 +271,7 @@ class Animator:
             hm = ax.imshow(self.bg_heatmaps[0], extent=hm_extent, cmap=cmap, vmin=vmin, vmax=vmax, alpha=0.7)
 
         if self.show_times:
-            timestamps = traces["timestamp"] if self.sports == "soccer" else traces["time_left"]
+            timestamps = main_tracking["timestamp"] if self.sports == "soccer" else main_tracking["time_left"]
             timestamps = timestamps.dt.total_seconds() if isinstance(timestamps.iloc[0], timedelta) else timestamps
             timestamps_str = timestamps.apply(lambda x: f"{int(x // 60):02d}:{x % 60:05.2f}").values
             time_text = ax.text(
@@ -285,7 +285,7 @@ class Animator:
             time_text.set_animated(True)
 
         if self.show_episodes:
-            episodes_str = traces["episode"].apply(lambda x: f"Episode {x}")
+            episodes_str = main_tracking["episode"].apply(lambda x: f"Episode {x}")
             episodes_str = np.where(episodes_str == "Episode 0", "", episodes_str)
             text_x = self.pitch_size[0]
             episode_text = ax.text(
@@ -299,8 +299,8 @@ class Animator:
             episode_text.set_animated(True)
 
         if self.show_events:
-            assert "event_type" in traces.columns
-            events_str = traces.apply(lambda x: f"{x['event_type']} by {x['player_id']}", axis=1)
+            assert "event_type" in main_tracking.columns
+            events_str = main_tracking.apply(lambda x: f"{x['event_type']} by {x['player_id']}", axis=1)
             events_str = np.where(events_str == "nan by nan", "", events_str)
 
             text_x = self.pitch_size[0] / 2
@@ -314,17 +314,17 @@ class Animator:
             )
             event_text.set_animated(True)
 
-            if "event_x" in traces.columns:
-                event_args = Animator.plot_events(traces[["event_x", "event_y"]], ax, color="orange", marker="*")
+            if "event_x" in main_tracking.columns:
+                event_args = Animator.plot_events(main_tracking[["event_x", "event_y"]], ax, color="orange", marker="*")
 
-            if "annot_x" in traces.columns:
-                annot_args = Animator.plot_events(traces[["annot_x", "annot_y"]], ax, color="k", marker="X")
+            if "annot_x" in main_tracking.columns:
+                annot_args = Animator.plot_events(main_tracking[["annot_x", "annot_y"]], ax, color="k", marker="X")
 
         if self.text_cols is not None:
             str_dict = {}
             text_dict = {}
             for i, col in enumerate(self.text_cols):
-                str_dict[col] = f"{col}: " + np.where(traces[col].isna(), "", traces[col].astype(str))
+                str_dict[col] = f"{col}: " + np.where(main_tracking[col].isna(), "", main_tracking[col].astype(str))
                 text_x = self.pitch_size[0] * i / 2
                 text_dict[col] = ax.text(
                     text_x,
@@ -337,7 +337,7 @@ class Animator:
                 text_dict[col].set_animated(True)
 
         def animate(t):
-            for key in self.trace_dict.keys():
+            for key in self.track_dict.keys():
                 inplay_records = self.arg_dict[key]["inplay_records"]
                 home_args = self.arg_dict[key]["home"]
                 away_args = self.arg_dict[key]["away"]
@@ -362,17 +362,17 @@ class Animator:
             if self.show_events:
                 event_text.set_text(events_str[t])
 
-                if "event_x" in traces.columns:
+                if "event_x" in main_tracking.columns:
                     Animator.animate_events(t, *event_args)
 
-                if "annot_x" in traces.columns:
+                if "annot_x" in main_tracking.columns:
                     Animator.animate_events(t, *annot_args)
 
             if self.text_cols is not None:
                 for col in self.text_cols:
                     text_dict[col].set_text(str(str_dict[col][t]))
 
-        frames = min(max_frames, traces.shape[0])
+        frames = min(max_frames, main_tracking.shape[0])
         anim = animation.FuncAnimation(fig, animate, frames=frames, interval=1000 / fps)
         plt.close(fig)
 
