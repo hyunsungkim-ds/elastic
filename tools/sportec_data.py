@@ -12,7 +12,7 @@ from tools.match_data import MatchData
 
 META_DIR = "data/sportec/metadata"
 EVENT_DIR = "data/sportec/event"
-TRACKING_DIR = "data/sportec/tracking"
+TRACKING_DIR = "data/sportec/tracking_parquet"
 
 POSITION_MAPPING = {
     None: None,
@@ -50,22 +50,30 @@ class SportecData(MatchData):
 
         meta_files = [f for f in os.listdir(META_DIR) if "matchinformation" in f and match_id in f]
         event_files = [f for f in os.listdir(EVENT_DIR) if "events" in f and match_id in f]
-        tracking_files = [f for f in os.listdir(TRACKING_DIR) if "positions" in f and match_id in f]
-
-        assert meta_files and event_files and tracking_files
+        assert meta_files and event_files
 
         self.meta_path = f"{META_DIR}/{meta_files[0]}"
         self.event_path = f"{EVENT_DIR}/{event_files[0]}"
-        self.tracking_path = f"{TRACKING_DIR}/{tracking_files[0]}"
 
         self.lineup = self.load_lineup_data(self.meta_path)
         self.events = self.load_event_data(self.event_path)
         self.events = self.align_event_orientations(self.lineup, self.events)
 
-        # Since it often takes more than a minute to load tracking data, you can choose whether to delay loading
-        if load_tracking:
-            self.tracking_ds, self.tracking = self.load_tracking_data(self.tracking_path, self.meta_path, self.lineup)
-            self.fps = self.tracking_ds.frame_rate
+        if "parquet" in TRACKING_DIR:
+            tracking_files = [f for f in os.listdir(TRACKING_DIR) if match_id in f and f.endswith(".parquet")]
+            self.tracking_path = f"{TRACKING_DIR}/{tracking_files[0]}"
+            self.tracking = pd.read_parquet(self.tracking_path)
+            self.fps = 25
+
+        else:
+            tracking_files = [f for f in os.listdir(TRACKING_DIR) if "positions" in f and match_id in f]
+            self.tracking_path = f"{TRACKING_DIR}/{tracking_files[0]}"
+
+            # Since it often takes more than a minute to load tracking data, you can choose whether to delay loading
+            if load_tracking:
+                args = [self.tracking_path, self.meta_path, self.lineup]
+                self.tracking_ds, self.tracking = self.load_tracking_data(*args)
+                self.fps = self.tracking_ds.frame_rate
 
     @staticmethod
     def load_lineup_data(meta_path: str) -> pd.DataFrame:

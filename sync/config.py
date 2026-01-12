@@ -1,6 +1,6 @@
 LINEUP_PATH = "data/ajax/lineup/line_up.parquet"
-EVENT_PATH = "data/ajax/event/event.parquet"
-TRACKING_DIR = "data/ajax/tracking"
+EVENT_PATH = "data/ajax/event/event_v1.parquet"
+TRACKING_DIR = "data/ajax/tracking_v1"
 OUTPUT_DIR = "data/ajax/event_synced"
 
 PITCH_X = 105.0  # unit: meters
