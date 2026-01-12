@@ -62,7 +62,7 @@ class ELASTIC:
             n_prev_episodes = episode_ids.max()
 
         # Store synchronization results
-        self.last_matched_frame = 0
+        self.last_matched = {"frame": 0, "player_id": None, "spadl_type": None}
         self.matched_frames = pd.Series(np.nan, index=self.events.index)
         self.receive_det = None
 
@@ -640,14 +640,26 @@ class ELASTIC:
 
         for i in tqdm(major_events.index[1:], desc=f"Syncing major events in period {period}"):
             event_type = self.events.at[i, "spadl_type"]
+            player_id = self.events.at[i, "player_id"]
+            min_frame = self.last_matched["frame"]
+
+            if (
+                event_type in config.PASS_LIKE_OPEN + config.SET_PIECE
+                and self.last_matched["spadl_type"] in config.PASS_LIKE_OPEN
+                and player_id == self.last_matched["player_id"]
+            ):
+                min_frame += 5
+
             s, matching_func = ELASTIC._find_matching_func(event_type)
-            windows = self._window_of_frames(self.events.loc[i], s, self.last_matched_frame)
+            windows = self._window_of_frames(self.events.loc[i], s, min_frame)
 
             if len(windows[1]) > 0:
                 best_frame = self._find_matching_frame(matching_func, *windows)[0]
                 if best_frame == best_frame:
                     self.matched_frames[i] = best_frame
-                    self.last_matched_frame = best_frame
+                    self.last_matched["frame"] = best_frame
+                    self.last_matched["player_id"] = self.events.at[i, "player_id"]
+                    self.last_matched["spadl_type"] = self.events.at[i, "spadl_type"]
 
     def _sync_minor_events(self) -> None:
         minor_events = self.events[self.events["spadl_type"].isin(self.post_sync_types)]
@@ -722,21 +734,22 @@ class ELASTIC:
 
             try:  # STEP 1: Kick-off detection for the current period
                 best_frame = self.detect_kickoff(period=period)
-                self.last_matched_frame = best_frame
-                self.matched_frames.loc[kickoff_idx] = best_frame
 
                 # Adjust the time bias between events and tracking
                 ts_offset = self.events.at[kickoff_idx, "utc_timestamp"] - self.frames.at[best_frame, "utc_timestamp"]
                 self.events.loc[period_events.index, "utc_timestamp"] -= ts_offset
 
             except ValueError:  # If there is no candidate frames for the kickoff, then find the second event
-                kickoff_frame = self.frames[self.frames["period_id"] == period].index[0]
-                self.last_matched_frame = kickoff_frame
-                self.matched_frames.loc[kickoff_idx] = kickoff_frame
+                best_frame = self.frames[self.frames["period_id"] == period].index[0]
 
                 # kickoff_idx += 1
                 # windows = self._window_of_frames(self.events.loc[kickoff_idx], 5)
                 # best_frame = self._find_matching_frame(ELASTIC._detect_pass_like, *windows)[0]
+
+            self.matched_frames.loc[kickoff_idx] = best_frame
+            self.last_matched["frame"] = best_frame
+            self.last_matched["player_id"] = self.events.at[kickoff_idx, "player_id"]
+            self.last_matched["spadl_type"] = self.events.at[kickoff_idx, "spadl_type"]
 
             kickoff_idx = len(self.events[self.events["period_id"] == period])
 
@@ -780,14 +793,27 @@ class ELASTIC:
         s, matching_func = ELASTIC._find_matching_func(event_type)
         print(f"Event {event_idx}: {event_type} by {event['player_id']}")
 
-        prev_frames = self.matched_frames.loc[: event_idx - 1].values if event_idx > 0 else np.array([0])
-        min_frame = np.nanmax([np.nanmax(prev_frames), 0])
+        prev_matched = self.matched_frames.loc[: event_idx - 1].dropna() if event_idx > 0 else np.array([0])
+        min_frame = prev_matched.iloc[-1] if len(prev_matched) > 0 else 0
+
+        # prev_frames = self.matched_frames.loc[: event_idx - 1].values if event_idx > 0 else np.array([0])
+        # min_frame = np.nanmax([np.nanmax(prev_frames), 0])
 
         if event_type in self.post_sync_types and event["next_type"] not in self.post_sync_types:
             next_frames = self.matched_frames.loc[event_idx + 1 :].values
             max_frame = np.nanmin([np.nanmin(next_frames), np.inf])
             windows = self._window_of_frames(event, s, min_frame, max_frame)
         else:
+            if len(prev_matched) > 0:
+                prev_matched_idx = prev_matched.index[-1]
+                prev_event_type = self.events.at[prev_matched_idx, "spadl_type"]
+                prev_player_id = self.events.at[prev_matched_idx, "player_id"]
+                if (
+                    event_type in config.PASS_LIKE_OPEN + config.SET_PIECE
+                    and prev_event_type in config.PASS_LIKE_OPEN
+                    and prev_player_id == event["player_id"]
+                ):
+                    min_frame += 5
             windows = self._window_of_frames(event, s, min_frame)
 
         best_frame, features, cand_features = self._find_matching_frame(matching_func, *windows)
