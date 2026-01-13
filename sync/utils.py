@@ -39,7 +39,7 @@ angle_change_func = linear_scoring_func(-1, 1, increasing=False)  # increasing f
 frame_delay_func = linear_scoring_func(0, 125, increasing=False)
 
 
-def score_nw(features: Union[pd.Series, pd.DataFrame], player_id: str, kick_dist_col: str) -> Union[float, np.ndarray]:
+def score_nw(features: pd.Series | pd.DataFrame, player_id: str, kick_dist_col: str) -> float | np.ndarray:
     if isinstance(features, pd.DataFrame):
         scores = np.zeros(len(features), dtype=float)
         if scores.size == 0:
@@ -60,6 +60,34 @@ def score_nw(features: Union[pd.Series, pd.DataFrame], player_id: str, kick_dist
         player_dist_score = 100 / 3 * player_dist_func(features["player_dist"])
         kick_dist_score = 100 / 3 * kick_dist_func(features[kick_dist_col])
         return ball_accel_score + player_dist_score + kick_dist_score
+
+    else:
+        return 0.0
+
+
+def score_nw_duel(features: pd.Series | pd.DataFrame, player_id: str, kick_dist_col: str) -> float | np.ndarray:
+    if isinstance(features, pd.DataFrame):
+        scores = np.zeros(len(features), dtype=float)
+        if scores.size == 0:
+            return scores
+
+        mask = features["player_id"] == player_id
+        if not mask.any():
+            return scores
+
+        ball_accel_score = 25 * ball_accel_func(features.loc[mask, "ball_accel"].to_numpy())
+        player_dist_score = 25 * player_dist_func(features.loc[mask, "player_dist"].to_numpy())
+        oppo_dist_score = 25 * player_dist_func(features.loc[mask, "oppo_dist"].to_numpy())
+        kick_dist_score = 25 * kick_dist_func(features.loc[mask, kick_dist_col].to_numpy())
+        scores[mask.to_numpy()] = ball_accel_score + player_dist_score + oppo_dist_score + kick_dist_score
+        return scores
+
+    elif features["player_id"] == player_id:  # isinstance(features, pd.Series)
+        ball_accel_score = 25 * ball_accel_func(features["ball_accel"])
+        player_dist_score = 25 * player_dist_func(features["player_dist"])
+        oppo_dist_score = 25 * player_dist_func(features["oppo_dist"])
+        kick_dist_score = 25 * kick_dist_func(features[kick_dist_col])
+        return ball_accel_score + player_dist_score + oppo_dist_score + kick_dist_score
 
     else:
         return 0.0

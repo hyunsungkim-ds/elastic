@@ -363,6 +363,7 @@ class ELASTIC_NW:
             output["away_dist"],
             np.where(output["team"] == "away", output["home_dist"], np.nan),
         )
+        output["oppo_dist"] = output["oppo_dist"].fillna(10.0)
 
         return output.drop(columns=["team", "home_id", "home_dist", "away_id", "away_dist"])
 
@@ -371,18 +372,18 @@ class ELASTIC_NW:
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Align events and candidate frames for a single episode using Needleman-Wunsch algorithm.
-        Only PASS_LIKE_OPEN, SET_PIECE, and INCOMING event types are aligned.
+        PASS_LIKE_OPEN, SET_PIECE, INCOMING, bad_touch, tackle, and dispossessed are aligned.
 
         Returns
         -------
         aligned : pd.DataFrame
             Alignment result with matched frames.
-        scores : pd.DataFrame
+        score_mat : pd.DataFrame
             Event-frame score matrix (n_events x n_frames) with event indices as rows and frame_ids as columns.
+        dp_mat : pd.DataFrame
+            DP matrix (n_events+1 x n_frames+1) with -1 as the first index and column.
         path : pd.DataFrame
             Optimal alignment path with event/frame positions, ids, and timestamps.
-        dp : pd.DataFrame
-            DP matrix (n_events+1 x n_frames+1) with -1 as the first index and column.
         """
         if "episode_id" not in self.events.columns:
             events = self.find_event_episodes(self.events)
@@ -397,79 +398,89 @@ class ELASTIC_NW:
         if "pre_kick_dist" not in cand_frames.columns:
             cand_frames = self.calculate_kick_dists(cand_frames)
 
-        event_types = config.PASS_LIKE_OPEN + config.SET_PIECE + config.INCOMING + ["bad_touch"]
+        minor_types = ["bad_touch", "tackle", "dispossessed"]
+        event_types = config.PASS_LIKE_OPEN + config.SET_PIECE + config.INCOMING + minor_types
+
         ep_events = events[(events["episode_id"] == episode_id) & (events["spadl_type"].isin(event_types))]
         ep_frames = cand_frames[cand_frames["episode_id"] == episode_id]
         ep_frame_ids = np.sort(ep_frames["frame_id"].unique())
 
         if ep_events.empty or len(ep_frame_ids) == 0:
             aligned = pd.DataFrame(columns=events.columns.tolist() + ["frame_id", "score"])
-            scores = pd.DataFrame(index=ep_events.index, columns=ep_frame_ids, dtype=float)
+            score_mat = pd.DataFrame(index=ep_events.index, columns=ep_frame_ids, dtype=float)
             path = pd.DataFrame(columns=["event_pos", "frame_pos", "event_idx", "frame_idx", "frame_id", "move"])
             dp_idx = [-1] + ep_events.index.tolist()
             dp_cols = [-1] + ep_frame_ids.tolist()
-            dp = pd.DataFrame(
+            dp_mat = pd.DataFrame(
                 np.zeros((len(dp_idx), len(dp_cols)), dtype=float),
                 index=dp_idx,
                 columns=dp_cols,
             )
-            return aligned, scores, path, dp
+            return aligned, score_mat, dp_mat, path
 
         n_events = len(ep_events)
         n_frames = len(ep_frame_ids)
-        scores = np.zeros((n_events, n_frames), dtype=float)
+        score_mat = np.zeros((n_events, n_frames), dtype=float)
         frame_pos_map = {frame_id: pos for pos, frame_id in enumerate(ep_frame_ids)}
 
         for i, event_idx in enumerate(ep_events.index):
             event_player = ep_events.at[event_idx, "player_id"]
             event_type = ep_events.at[event_idx, "spadl_type"]
-            kick_dist_col = "pre_kick_dist" if event_type in config.INCOMING else "post_kick_dist"
+            if event_type == "tackle":
+                kick_dist_col = "pre_kick_dist"
+                score_fn = utils.score_nw_duel
+            elif event_type == "dispossessed":
+                kick_dist_col = "post_kick_dist"
+                score_fn = utils.score_nw_duel
+            else:
+                kick_dist_col = "pre_kick_dist" if event_type in config.INCOMING else "post_kick_dist"
+                score_fn = utils.score_nw
             player_frames = ep_frames[ep_frames["player_id"] == event_player]
 
-            player_scores = utils.score_nw(player_frames, event_player, kick_dist_col)
+            player_scores = score_fn(player_frames, event_player, kick_dist_col)
             player_scores = pd.Series(player_scores, index=player_frames["frame_id"]).groupby(level=0).max()
 
             frame_pos = [frame_pos_map[frame_id] for frame_id in player_scores.index]
-            scores[i, frame_pos] = player_scores.to_numpy()
+            score_mat[i, frame_pos] = player_scores.to_numpy()
 
         gap_event = -10.0
         gap_frame = -10.0
         repeat_penalty = -20.0
         repeat_threshold = 50.0
-        dp = np.zeros((n_events + 1, n_frames + 1), dtype=float)
+        dp_mat = np.zeros((n_events + 1, n_frames + 1), dtype=float)
         trace = np.zeros((n_events + 1, n_frames + 1), dtype=np.int8)
 
         for i in range(1, n_events + 1):
-            dp[i, 0] = dp[i - 1, 0] + gap_event
+            dp_mat[i, 0] = dp_mat[i - 1, 0] + gap_event
             trace[i, 0] = 1
         for j in range(1, n_frames + 1):
-            dp[0, j] = dp[0, j - 1] + gap_frame
+            dp_mat[0, j] = dp_mat[0, j - 1] + gap_frame
             trace[0, j] = 2
 
         for i in range(1, n_events + 1):
             for j in range(1, n_frames + 1):
-                diag = dp[i - 1, j - 1] + scores[i - 1, j - 1]
-                up_gap = dp[i - 1, j] + gap_event
-                left_gap = dp[i, j - 1] + gap_frame
+                diag = dp_mat[i - 1, j - 1] + score_mat[i - 1, j - 1]
+                up_gap = dp_mat[i - 1, j] + gap_event
+                left_gap = dp_mat[i, j - 1] + gap_frame
                 up_match = -np.inf
-                if scores[i - 1, j - 1] >= repeat_threshold:
-                    up_match = dp[i - 1, j] + scores[i - 1, j - 1] + repeat_penalty
+                if score_mat[i - 1, j - 1] >= repeat_threshold:
+                    up_match = dp_mat[i - 1, j] + score_mat[i - 1, j - 1] + repeat_penalty
                 if diag >= up_gap and diag >= left_gap and diag >= up_match:
-                    dp[i, j] = diag
+                    dp_mat[i, j] = diag
                     trace[i, j] = 0
                 elif up_match >= up_gap and up_match >= left_gap:
-                    dp[i, j] = up_match
+                    dp_mat[i, j] = up_match
                     trace[i, j] = 3
                 elif up_gap >= left_gap:
-                    dp[i, j] = up_gap
+                    dp_mat[i, j] = up_gap
                     trace[i, j] = 1
                 else:
-                    dp[i, j] = left_gap
+                    dp_mat[i, j] = left_gap
                     trace[i, j] = 2
 
         dp_idx = [-1] + ep_events.index.tolist()
         dp_cols = [-1] + ep_frame_ids.tolist()
-        dp_table = pd.DataFrame(dp, index=dp_idx, columns=dp_cols)
+        dp_mat = pd.DataFrame(dp_mat, index=dp_idx, columns=dp_cols)
 
         match_rows = []
         path_rows = []
@@ -485,7 +496,7 @@ class ELASTIC_NW:
                         "index": ep_events.index[event_pos],
                         "frame_id": matched_frame,
                         "timestamp": self.frames.at[matched_frame, "timestamp"],
-                        "score": scores[event_pos, frame_pos],
+                        "score": score_mat[event_pos, frame_pos],
                     }
                 )
                 if trace[i, j] == 0:
@@ -506,6 +517,7 @@ class ELASTIC_NW:
                 move = "left"
                 j -= 1
 
+            timestamp = self.frames.loc[ep_frame_ids[frame_pos], "timestamp"] if frame_pos is not None else None
             path_rows.append(
                 {
                     "event_pos": event_pos,
@@ -513,9 +525,7 @@ class ELASTIC_NW:
                     "event_idx": ep_events.index[event_pos] if event_pos is not None else None,
                     "frame_idx": ep_frame_ids[frame_pos] if frame_pos is not None else None,
                     "frame_id": ep_frame_ids[frame_pos] if frame_pos is not None else None,
-                    "timestamp": (
-                        self.frames.loc[ep_frame_ids[frame_pos], "timestamp"] if frame_pos is not None else None
-                    ),
+                    "timestamp": timestamp,
                     "move": move,
                 }
             )
@@ -527,8 +537,8 @@ class ELASTIC_NW:
         path = pd.DataFrame(path_rows)
 
         aligned = pd.concat([events.loc[matches.index], matches], axis=1)[config.ALIGNED_COLS]
-        scores = pd.DataFrame(scores, index=ep_events.index, columns=ep_frame_ids)
-        return aligned, scores, dp_table, path
+        score_mat = pd.DataFrame(score_mat, index=ep_events.index, columns=ep_frame_ids)
+        return aligned, score_mat, dp_mat, path
 
     def run(self) -> pd.DataFrame:
         """
