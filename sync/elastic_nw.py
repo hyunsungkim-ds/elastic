@@ -296,6 +296,45 @@ class ELASTIC_NW:
 
         return output
 
+    def calculate_oppo_features(self, cand_frames: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add opponent features based on other candidates in the same frame.
+
+        oppo_id/oppo_dist are taken from the closest opponent in the same frame_id.
+        """
+        cand_frames = cand_frames.copy()
+        cand_frames["oppo_id"] = np.nan
+        cand_frames["oppo_dist"] = np.nan
+
+        if cand_frames.empty:
+            return cand_frames
+
+        def find_frame_oppo_features(group: pd.DataFrame) -> pd.DataFrame:
+            if len(group) < 2:
+                return group
+            group = group.copy()
+            team_prefix = group["player_id"].astype(str).str[:4]
+
+            oppo_ids = []
+            oppo_dists = []
+
+            for idx, row in group.iterrows():
+                opponents = group[team_prefix != team_prefix.at[idx]]
+                if opponents.empty:
+                    oppo_ids.append(np.nan)
+                    oppo_dists.append(np.nan)
+                else:
+                    closest = opponents.sort_values("player_dist", na_position="last").iloc[0]
+                    oppo_ids.append(closest["player_id"])
+                    oppo_dists.append(closest["player_dist"])
+
+            group["oppo_id"] = oppo_ids
+            group["oppo_dist"] = oppo_dists
+
+            return group
+
+        return cand_frames.groupby("frame_id", group_keys=False).apply(find_frame_oppo_features)
+
     def align_episode(
         self, episode_id: int, cand_frames: pd.DataFrame = None
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -324,8 +363,11 @@ class ELASTIC_NW:
             assert isinstance(self.cand_frames, pd.DataFrame)
             cand_frames = self.cand_frames.copy()
 
-        if "pre_kick_dist" not in cand_frames.columns or "post_kick_dist" not in cand_frames.columns:
+        if "pre_kick_dist" not in cand_frames.columns:
             cand_frames = self.calculate_kick_dists(cand_frames)
+
+        if "oppo_dist" not in cand_frames.columns:
+            cand_frames = self.calculate_oppo_features(cand_frames)
 
         event_types = config.PASS_LIKE_OPEN + config.SET_PIECE + config.INCOMING + ["bad_touch"]
         ep_events = events[(events["episode_id"] == episode_id) & (events["spadl_type"].isin(event_types))]
@@ -469,7 +511,12 @@ class ELASTIC_NW:
 
         if self.cand_frames is None:
             self.cand_frames = self.find_candidate_frames()
+
+        if "pre_kick_dist" not in self.cand_frames.columns:
             self.cand_frames = self.calculate_kick_dists(self.cand_frames)
+
+        if "oppo_dist" not in self.cand_frames.columns:
+            self.cand_frames = self.calculate_oppo_features(self.cand_frames)
 
         matches = []
         for episode_id in tqdm(self.frames["episode_id"].unique(), desc="Needleman-Wunsch alignment"):
