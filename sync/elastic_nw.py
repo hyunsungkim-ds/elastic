@@ -71,10 +71,13 @@ class ELASTIC_NW:
     def find_event_episodes(self, events: pd.DataFrame) -> pd.DataFrame:
         """Assign the nearest episode to each event based on utc_timestamp.
 
+        Enforces that each episode's first event is a set piece or a pass when possible.
         Returns a copy of self.events with an added 'episode_id' column.
         """
         events = events.copy()
         events["episode_id"] = 0
+        allowed_start_types = config.SET_PIECE + ["pass"]
+        episode_period_map = self.frames.groupby("episode_id")["period_id"].first().to_dict()
 
         for period_id in events["period_id"].dropna().unique():
             period_events: pd.DataFrame = events[events["period_id"] == period_id]
@@ -92,6 +95,29 @@ class ELASTIC_NW:
                 direction="nearest",
             )
             events.loc[aligned["index"], "episode_id"] = aligned["episode_id"].values
+
+            period_mask = events["period_id"] == period_id
+            if not period_mask.any():
+                continue
+            period_episode_ids = self.frames.loc[self.frames["period_id"] == period_id, "episode_id"].unique()
+            for episode_id in sorted(period_episode_ids, reverse=True):
+                if episode_period_map.get(episode_id) != period_id:
+                    continue
+                ep_events = events[period_mask & (events["episode_id"] == episode_id)].sort_values("utc_timestamp")
+                if ep_events.empty:
+                    continue
+                allowed_mask = ep_events["spadl_type"].isin(allowed_start_types).to_numpy()
+                if allowed_mask.any():
+                    first_allowed_pos = int(np.flatnonzero(allowed_mask)[0])
+                else:
+                    first_allowed_pos = len(ep_events)
+                if first_allowed_pos == 0:
+                    continue
+                prev_episode_id = episode_id - 1
+                if episode_period_map.get(prev_episode_id) != period_id:
+                    continue
+                prefix_idx = ep_events.index[:first_allowed_pos]
+                events.loc[prefix_idx, "episode_id"] = prev_episode_id
 
         return events
 
@@ -196,10 +222,13 @@ class ELASTIC_NW:
                     if not any(abs(i - c) <= 3 for c in candidates):
                         candidates.add(i)
 
-                # Always include the first frame of each episode (if present in features)
+                # Always include the first/last frame of each episode (if present in features)
                 first_pos = features.index.get_indexer([episode_frames[0]])[0]
                 if first_pos >= 0:
                     candidates.add(int(first_pos))
+                last_pos = features.index.get_indexer([episode_frames[-1]])[0]
+                if last_pos >= 0:
+                    candidates.add(int(last_pos))
 
                 if len(candidates) == 0:
                     continue
@@ -278,31 +307,57 @@ class ELASTIC_NW:
 
         return output
 
-    def align_episode(self, cand_frames: pd.DataFrame, episode_id: int) -> pd.DataFrame:
+    def align_episode(
+        self, episode_id: int, cand_frames: pd.DataFrame = None
+    ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Align events and candidate frames for a single episode using Needleman-Wunsch algorithm.
         Only PASS_LIKE_OPEN, SET_PIECE, and INCOMING event types are aligned.
+
+        Returns
+        -------
+        aligned : pd.DataFrame
+            Alignment result with matched frames.
+        scores : pd.DataFrame
+            Event-frame score matrix (n_events x n_frames) with event indices as rows and candidate indices as columns.
+        path : pd.DataFrame
+            Optimal alignment path with event/frame positions, ids, and timestamps.
+        dp : pd.DataFrame
+            DP matrix (n_events+1 x n_frames+1) with -1 as the first index and column.
         """
         if "episode_id" not in self.events.columns:
             events = self.find_event_episodes(self.events)
         else:
             events = self.events.copy()
+        events = events.drop(columns=["frame_id", "synced_ts"], errors="ignore")
+
+        if cand_frames is None:
+            assert isinstance(self.cand_frames, pd.DataFrame)
+            cand_frames = self.cand_frames.copy()
 
         if "pre_kick_dist" not in cand_frames.columns or "post_kick_dist" not in cand_frames.columns:
             cand_frames = self.calculate_kick_dists(cand_frames)
 
-        event_types = config.PASS_LIKE_OPEN + config.SET_PIECE + config.INCOMING
+        event_types = config.PASS_LIKE_OPEN + config.SET_PIECE + config.INCOMING + ["bad_touch"]
         ep_events = events[(events["episode_id"] == episode_id) & (events["spadl_type"].isin(event_types))]
         ep_frames = cand_frames[cand_frames["episode_id"] == episode_id]
         if ep_events.empty or ep_frames.empty:
-            return pd.DataFrame(columns=events.columns.tolist() + ["frame_id", "score"])
-
-        ep_events = ep_events.sort_values("utc_timestamp")
-        ep_frames = ep_frames.sort_values("frame_id").reset_index(drop=True)
+            aligned = pd.DataFrame(columns=events.columns.tolist() + ["frame_id", "score"])
+            scores = pd.DataFrame(index=ep_events.index, columns=ep_frames.index, dtype=float)
+            path = pd.DataFrame(columns=["event_pos", "frame_pos", "event_idx", "frame_idx", "frame_id", "move"])
+            dp_idx = [-1] + ep_events.index.tolist()
+            dp_cols = [-1] + ep_frames.index.tolist()
+            dp = pd.DataFrame(
+                np.zeros((len(dp_idx), len(dp_cols)), dtype=float),
+                index=dp_idx,
+                columns=dp_cols,
+            )
+            return aligned, scores, path, dp
 
         event_players = ep_events["player_id"].to_numpy()
         event_types = ep_events["spadl_type"].to_numpy()
         frame_ids = ep_frames["frame_id"].to_numpy()
+        frame_indices = ep_frames.index.to_numpy()
 
         n_events = len(ep_events)
         n_frames = len(ep_frames)
@@ -314,6 +369,8 @@ class ELASTIC_NW:
 
         gap_event = -10.0
         gap_frame = -10.0
+        repeat_penalty = -20.0
+        repeat_threshold = 50.0
         dp = np.zeros((n_events + 1, n_frames + 1), dtype=float)
         trace = np.zeros((n_events + 1, n_frames + 1), dtype=np.int8)
 
@@ -327,47 +384,88 @@ class ELASTIC_NW:
         for i in range(1, n_events + 1):
             for j in range(1, n_frames + 1):
                 diag = dp[i - 1, j - 1] + scores[i - 1, j - 1]
-                up = dp[i - 1, j] + gap_event
-                left = dp[i, j - 1] + gap_frame
-                if diag >= up and diag >= left:
+                up_gap = dp[i - 1, j] + gap_event
+                left_gap = dp[i, j - 1] + gap_frame
+                up_match = -np.inf
+                if scores[i - 1, j - 1] >= repeat_threshold:
+                    up_match = dp[i - 1, j] + scores[i - 1, j - 1] + repeat_penalty
+                if diag >= up_gap and diag >= left_gap and diag >= up_match:
                     dp[i, j] = diag
                     trace[i, j] = 0
-                elif up >= left:
-                    dp[i, j] = up
+                elif up_match >= up_gap and up_match >= left_gap:
+                    dp[i, j] = up_match
+                    trace[i, j] = 3
+                elif up_gap >= left_gap:
+                    dp[i, j] = up_gap
                     trace[i, j] = 1
                 else:
-                    dp[i, j] = left
+                    dp[i, j] = left_gap
                     trace[i, j] = 2
 
-        matches = []
+        dp_idx = [-1] + ep_events.index.tolist()
+        dp_cols = [-1] + ep_frames.index.tolist()
+        dp_table = pd.DataFrame(dp, index=dp_idx, columns=dp_cols)
+
+        match_rows = []
+        path_rows = []
         i = n_events
         j = n_frames
-        while i > 0 and j > 0:
-            if trace[i, j] == 0:
-                matched_frame = frame_ids[j - 1]
-                matches.append(
+        while i > 0 or j > 0:
+            if i > 0 and j > 0 and trace[i, j] in (0, 3):
+                event_pos = i - 1
+                frame_pos = j - 1
+                matched_frame = frame_ids[frame_pos]
+                match_rows.append(
                     {
-                        "index": ep_events.index[i - 1],
+                        "index": ep_events.index[event_pos],
                         "frame_id": matched_frame,
                         "timestamp": self.frames.at[matched_frame, "timestamp"],
-                        "score": scores[i - 1, j - 1],
+                        "score": scores[event_pos, frame_pos],
                     }
                 )
-                i -= 1
-                j -= 1
-            elif trace[i, j] == 1:
+                if trace[i, j] == 0:
+                    move = "diag"
+                    i -= 1
+                    j -= 1
+                else:
+                    move = "repeat"
+                    i -= 1
+            elif i > 0 and (j == 0 or trace[i, j] == 1):
+                event_pos = i - 1
+                frame_pos = None
+                move = "up"
                 i -= 1
             else:
+                event_pos = None
+                frame_pos = j - 1
+                move = "left"
                 j -= 1
 
-        matches.reverse()
-        matches = pd.DataFrame(matches).set_index("index")
+            path_rows.append(
+                {
+                    "event_pos": event_pos,
+                    "frame_pos": frame_pos,
+                    "event_idx": ep_events.index[event_pos] if event_pos is not None else None,
+                    "frame_idx": frame_indices[frame_pos] if frame_pos is not None else None,
+                    "frame_id": frame_ids[frame_pos] if frame_pos is not None else None,
+                    "timestamp": self.frames.loc[frame_ids[frame_pos], "timestamp"] if frame_pos is not None else None,
+                    "move": move,
+                }
+            )
 
-        return pd.concat([events.loc[matches.index], matches], axis=1)[config.NW_COLS]
+        match_rows.reverse()
+        matches = pd.DataFrame(match_rows).set_index("index")
+
+        path_rows.reverse()
+        path = pd.DataFrame(path_rows)
+
+        aligned = pd.concat([events.loc[matches.index], matches], axis=1)[config.ALIGNED_COLS]
+        scores = pd.DataFrame(scores, index=ep_events.index, columns=ep_frames.index)
+        return aligned, scores, dp_table, path
 
     def run(self) -> pd.DataFrame:
         """
-        Runs NW alignment across the full match by episode.
+        Runs Needleman-Wunsch alignment across the full match by episode.
         """
         if "episode_id" not in self.events.columns:
             self.events = self.find_event_episodes(self.events)
@@ -378,7 +476,7 @@ class ELASTIC_NW:
 
         matches = []
         for episode_id in tqdm(self.frames["episode_id"].unique(), desc="Needleman-Wunsch alignment"):
-            episode_matches = self.align_episode(self.cand_frames, episode_id)
+            episode_matches, _, _, _ = self.align_episode(episode_id)
             if not episode_matches.empty:
                 matches.append(episode_matches)
 
@@ -386,7 +484,7 @@ class ELASTIC_NW:
             aligned = pd.concat(matches).sort_index()
             self.matched_frames.loc[aligned.index] = aligned["frame_id"]
         else:
-            aligned = pd.DataFrame(columns=config.NW_COLS)
+            aligned = pd.DataFrame(columns=config.ALIGNED_COLS)
 
         self.events["frame_id"] = self.matched_frames
         self.events["synced_ts"] = self.events["frame_id"].map(self.frames["timestamp"].to_dict())
