@@ -136,7 +136,7 @@ class MatchData(ABC):
 
         synced_cols = ["period_id", "synced_ts", "player_id", "event_type"]
         synced_events = events.loc[events["synced_ts"].notna(), synced_cols].copy().reset_index(drop=True)
-        synced_events["timestamp"] = synced_events["synced_ts"].apply(timestamp_to_seconds)
+        synced_events["timestamp"] = synced_events["synced_ts"].apply(timestamp_to_seconds).round(3)
         synced_events.drop("synced_ts", axis=1, inplace=True)
 
         annot_cols = ["period_id", "utc_timestamp", "annot_x", "annot_y"]
