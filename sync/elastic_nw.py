@@ -121,6 +121,81 @@ class ELASTIC_NW:
 
         return events
 
+    def find_player_candidate_frames(self, episode_id: int, player_id: int) -> pd.DataFrame:
+        """Compute candidate frames for a (episode, player) pair."""
+        output_cols = ["episode_id", "frame_id", "player_id", "player_dist", "ball_height", "ball_accel"]
+        episode_frames = self.frames[self.frames["episode_id"] == episode_id].index.values
+        if len(episode_frames) == 0:
+            return pd.DataFrame(columns=output_cols)
+
+        episode_tracking = self.tracking[self.tracking["frame_id"].isin(episode_frames)]
+        ball_data = episode_tracking[episode_tracking["ball"]].set_index("frame_id")
+        player_data = episode_tracking[episode_tracking["player_id"] == player_id].set_index("frame_id")
+        common_frames = player_data.index.intersection(ball_data.index)
+        if player_data.empty or ball_data.empty or len(common_frames) == 0:
+            return pd.DataFrame(columns=output_cols)
+
+        player_subset: pd.DataFrame = player_data.loc[common_frames]
+        ball_subset: pd.DataFrame = ball_data.loc[common_frames]
+
+        player_x = player_subset["x"].values
+        player_y = player_subset["y"].values
+        ball_x = ball_subset["x"].values
+        ball_y = ball_subset["y"].values
+
+        player_dists = np.sqrt((player_x - ball_x) ** 2 + (player_y - ball_y) ** 2)
+        ball_heights = ball_subset["z"].values
+        ball_accels = ball_subset["accel_v"].values
+
+        features = pd.DataFrame(
+            {
+                "episode_id": episode_id,
+                "frame_id": common_frames,
+                "player_id": player_id,
+                "player_dist": player_dists,
+                "ball_height": ball_heights,
+                "ball_accel": ball_accels,
+            }
+        ).set_index("frame_id")
+        features = features.sort_index()
+
+        dist_valleys = find_peaks(-features["player_dist"].values, prominence=1)[0]
+        height_valleys = find_peaks(-features["ball_height"].values, prominence=0.5)[0]
+        accel_peaks = find_peaks(features["ball_accel"].values, prominence=10, distance=10)[0]
+
+        candidates = set(dist_valleys.tolist())
+        for i in height_valleys:
+            if not any(abs(i - c) <= 3 for c in candidates):
+                candidates.add(i)
+        for i in accel_peaks:
+            if not any(abs(i - c) <= 3 for c in candidates):
+                candidates.add(i)
+
+        first_pos = features.index.get_indexer([episode_frames[0]])[0]
+        if first_pos >= 0:
+            candidates.add(int(first_pos))
+        last_pos = features.index.get_indexer([episode_frames[-1]])[0]
+        if last_pos >= 0:
+            candidates.add(int(last_pos))
+
+        if len(candidates) == 0:
+            return pd.DataFrame(columns=output_cols)
+
+        candidates = sorted(candidates)
+        cand_features = features.iloc[candidates].copy()
+
+        for idx in cand_features.index:
+            window_start = max(features.index[0], idx - 3)
+            window_end = min(features.index[-1], idx + 3)
+            window = features.loc[window_start:window_end]
+
+            cand_features.at[idx, "player_dist"] = window["player_dist"].min()
+            cand_features.at[idx, "ball_height"] = window["ball_height"].min()
+            cand_features.at[idx, "ball_accel"] = window["ball_accel"].max()
+
+        valid_mask = (cand_features["player_dist"] < 3) & (cand_features["ball_height"] < 3.5)
+        return cand_features[valid_mask].reset_index()
+
     def find_candidate_frames(self, period: int = None) -> pd.DataFrame:
         """Find candidate frames for alignment based on physical constraints.
 
@@ -151,107 +226,17 @@ class ELASTIC_NW:
             tracking = self.tracking[self.tracking["period_id"] == period].copy()
             frames = self.frames[self.frames["period_id"] == period]
 
-        if tracking.empty or frames.empty:
+        if self.tracking.empty or self.frames.empty:
             return pd.DataFrame(columns=output_cols)
 
         tracking = tracking.merge(frames["episode_id"], left_on="frame_id", right_index=True, how="inner")
         cand_frames: List[pd.DataFrame] = []
 
         for episode_id, episode_tracking in tqdm(tracking.groupby("episode_id"), desc="Detecting candidate frames"):
-            episode_frames = frames[frames["episode_id"] == episode_id].index.values
-            if len(episode_frames) == 0:
-                continue
-
-            ball_data = episode_tracking[episode_tracking["ball"]].set_index("frame_id")
-            if ball_data.empty:
-                continue
-
             players = episode_tracking["player_id"].dropna().unique()
             for player_id in players:
-                player_data = episode_tracking[episode_tracking["player_id"] == player_id].set_index("frame_id")
-
-                # Find common frames between player and ball
-                common_frames = player_data.index.intersection(ball_data.index)
-                if len(common_frames) == 0:
-                    continue
-
-                player_subset: pd.DataFrame = player_data.loc[common_frames]
-                ball_subset: pd.DataFrame = ball_data.loc[common_frames]
-
-                # Compute features
-                player_x = player_subset["x"].values
-                player_y = player_subset["y"].values
-                ball_x = ball_subset["x"].values
-                ball_y = ball_subset["y"].values
-
-                player_dists = np.sqrt((player_x - ball_x) ** 2 + (player_y - ball_y) ** 2)
-                ball_heights = ball_subset["z"].values
-                ball_accels = ball_subset["accel_v"].values
-
-                # Create features DataFrame for peak detection
-                features = pd.DataFrame(
-                    {
-                        "episode_id": episode_id,
-                        "frame_id": common_frames,
-                        "player_id": player_id,
-                        "player_dist": player_dists,
-                        "ball_height": ball_heights,
-                        "ball_accel": ball_accels,
-                    }
-                ).set_index("frame_id")
-                features = features.sort_index()
-
-                # Find candidate indices (peaks and valleys)
-                # 1. Distance valleys (player approaching the ball)
-                dist_valleys = find_peaks(-features["player_dist"].values, prominence=1)[0]
-
-                # 2. Height valleys (ball touching the ground or a player)
-                height_valleys = find_peaks(-features["ball_height"].values, prominence=0.5)[0]
-
-                # 3. Acceleration peaks (ball being kicked)
-                accel_peaks = find_peaks(features["ball_accel"].values, prominence=10, distance=10)[0]
-
-                # Combine all candidate indices (avoiding duplicates within ±3 frames)
-                candidates = set(dist_valleys.tolist())
-
-                for i in height_valleys:
-                    if not any(abs(i - c) <= 3 for c in candidates):
-                        candidates.add(i)
-
-                for i in accel_peaks:
-                    if not any(abs(i - c) <= 3 for c in candidates):
-                        candidates.add(i)
-
-                # Always include the first/last frame of each episode (if present in features)
-                first_pos = features.index.get_indexer([episode_frames[0]])[0]
-                if first_pos >= 0:
-                    candidates.add(int(first_pos))
-                last_pos = features.index.get_indexer([episode_frames[-1]])[0]
-                if last_pos >= 0:
-                    candidates.add(int(last_pos))
-
-                if len(candidates) == 0:
-                    continue
-
-                candidates = sorted(candidates)
-                cand_features = features.iloc[candidates].copy()
-
-                # Apply smoothing: use min/max within ±3 frame window
-                for idx in cand_features.index:
-                    window_start = max(features.index[0], idx - 3)
-                    window_end = min(features.index[-1], idx + 3)
-                    window = features.loc[window_start:window_end]
-
-                    cand_features.at[idx, "player_dist"] = window["player_dist"].min()
-                    cand_features.at[idx, "ball_height"] = window["ball_height"].min()
-                    cand_features.at[idx, "ball_accel"] = window["ball_accel"].max()
-
-                # Filter by physical constraints
-                valid_mask = (cand_features["player_dist"] < 3) & (cand_features["ball_height"] < 3.5)
-                valid_candidates = cand_features[valid_mask].reset_index()
-
-                if len(valid_candidates) > 0:
-                    cand_frames.append(valid_candidates)
+                player_cand_frames = self.find_player_candidate_frames(episode_id, player_id)
+                cand_frames.append(player_cand_frames)
 
         if len(cand_frames) == 0:
             return pd.DataFrame(columns=output_cols)
