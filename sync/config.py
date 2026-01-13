@@ -33,6 +33,7 @@ SPADL_TYPES = [
     "ball_recovery",  # new, incoming
     "keeper_sweeper",  # new, incoming
     "dispossessed",  # new, minor
+    "control",  # new, incoming
 ]
 SPADL_BODYPARTS = ["foot", "head", "other", "head/other", "foot_left", "foot_right"]
 
@@ -40,7 +41,8 @@ SPADL_BODYPARTS = ["foot", "head", "other", "head/other", "foot_left", "foot_rig
 PASS_LIKE_OPEN = ["pass", "cross", "shot", "clearance", "keeper_punch", "shot_block"]
 SET_PIECE_OOP = ["throw_in", "goalkick", "corner_short", "corner_crossed"]
 SET_PIECE = SET_PIECE_OOP + ["freekick_short", "freekick_crossed", "shot_freekick", "shot_penalty"]
-INCOMING = ["interception", "keeper_save", "keeper_claim", "keeper_pick_up", "keeper_sweeper", "ball_recovery"]
+INCOMING_GK = ["keeper_save", "keeper_claim", "keeper_pick_up", "keeper_sweeper"]
+INCOMING = INCOMING_GK + ["interception", "ball_recovery", "control"]
 MINOR = ["tackle", "take_on", "second_take_on", "foul", "bad_touch", "dispossessed"]
 
 TIME_KICKOFF = 5  # Stats Perform: 5, Sportec: 5 (seconds)

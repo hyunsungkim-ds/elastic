@@ -25,11 +25,17 @@ class ELASTIC_NW:
         Event data to synchronize, according to schema sync.schema.event_schema.
     tracking : pd.DataFrame
         Tracking data to synchronize, according to schema sync.schema.tracking_schema.
-    args : dict, optional
-        Configuration arguments including 'fps' and 'post_sync_types'.
+    fps : float
+        Tracking data FPS.
     """
 
-    def __init__(self, events: pd.DataFrame, tracking: pd.DataFrame, args: dict = None) -> None:
+    def __init__(
+        self,
+        events: pd.DataFrame,
+        tracking: pd.DataFrame,
+        fps: float = 25.0,
+        detect_controls: bool = True,
+    ) -> None:
         schema.elastic_event_schema.validate(events)
         schema.tracking_schema.validate(tracking)
 
@@ -39,15 +45,7 @@ class ELASTIC_NW:
 
         self.events = events.copy()
         self.tracking = tracking
-
-        if args is None:
-            self.fps = 25
-            self.post_sync_types = config.MINOR
-        else:
-            self.fps = args["fps"]
-            self.post_sync_types = args["post_sync_types"]
-
-        self.pre_sync_types = list(set(config.SPADL_TYPES) - set(self.post_sync_types))
+        self.fps = fps
 
         # Define an episode as a sequence of consecutive in-play frames
         time_cols = ["frame_id", "period_id", "timestamp", "utc_timestamp"]
@@ -56,17 +54,47 @@ class ELASTIC_NW:
         self.frames["episode_id"] = 0
         n_prev_episodes = 0
 
-        for i in self.events["period_id"].unique():
+        for i in self.tracking["period_id"].unique():
             period_frames = self.frames.loc[self.frames["period_id"] == i].index.values
             episode_ids = (np.diff(period_frames, prepend=-5) >= 5).astype(int).cumsum() + n_prev_episodes
             self.frames.loc[self.frames["period_id"] == i, "episode_id"] = episode_ids
             n_prev_episodes = episode_ids.max()
 
-        # Store synchronization results
-        self.matched_frames = pd.Series(np.nan, index=self.events.index)
+        if "episode_id" not in self.events.columns:
+            self.events = self.find_event_episodes(self.events)
+
+        if detect_controls:
+            self.events = ELASTIC_NW.insert_control_events(self.events)
 
         # Precomputed candidate frames (to be filled by find_candidate_frames)
         self.cand_frames: pd.DataFrame = None
+
+    @staticmethod
+    def insert_control_events(events: pd.DataFrame) -> None:
+        """Insert control (reception) events before pass-like or dispossessed events."""
+        assert "episode_id" in events.columns
+
+        prev_events = events.shift(1)
+        target_types = ["pass", "cross", "shot", "clearance", "dispossessed"]
+        target_mask = (
+            (events["spadl_type"].isin(target_types))
+            & (prev_events["episode_id"] == events["episode_id"])
+            & (prev_events["player_id"] != events["player_id"])
+            & (prev_events["utc_timestamp"] < events["utc_timestamp"])
+        )
+
+        control_events = events.loc[target_mask].copy()
+        control_events["spadl_type"] = "control"
+        control_events["success"] = True
+
+        events = events.copy()
+        events["order"] = events.index.astype(float)
+        control_events["order"] = control_events.index.astype(float) - 0.5
+
+        combined = pd.concat([events, control_events], axis=0, ignore_index=False)
+        combined = combined.sort_values("order", kind="mergesort", ignore_index=True).drop(columns=["order"])
+
+        return combined
 
     def find_event_episodes(self, events: pd.DataFrame) -> pd.DataFrame:
         """Assign the nearest episode to each event based on utc_timestamp.
@@ -76,7 +104,7 @@ class ELASTIC_NW:
         """
         events = events.copy()
         events["episode_id"] = 0
-        allowed_start_types = config.SET_PIECE + ["pass"]
+        allowed_start_types = config.SET_PIECE + ["pass", "control"]
         episode_period_map = self.frames.groupby("episode_id")["period_id"].first().to_dict()
 
         for period_id in events["period_id"].dropna().unique():
@@ -576,9 +604,6 @@ class ELASTIC_NW:
         """
         Runs Needleman-Wunsch alignment across the full match by episode.
         """
-        if "episode_id" not in self.events.columns:
-            self.events = self.find_event_episodes(self.events)
-
         if self.cand_frames is None:
             self.cand_frames = self.find_candidate_frames()
 
@@ -593,11 +618,17 @@ class ELASTIC_NW:
 
         if len(matches) > 0:
             aligned = pd.concat(matches).sort_index()
-            self.matched_frames.loc[aligned.index] = aligned["frame_id"]
+            self.events.loc[aligned.index, "frame_id"] = aligned["frame_id"]
         else:
             aligned = pd.DataFrame(columns=config.ALIGNED_COLS)
 
-        self.events["frame_id"] = self.matched_frames
         self.events["synced_ts"] = self.events["frame_id"].map(self.frames["timestamp"].to_dict())
+
+        one_touch_mask = (
+            (self.events["spadl_type"] == "control")
+            & self.events["frame_id"].notna()
+            & (self.events["frame_id"] == self.events["frame_id"].shift(-1))
+        )
+        self.events = self.events.loc[~one_touch_mask].reset_index(drop=True)
 
         return aligned
