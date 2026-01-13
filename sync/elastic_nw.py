@@ -121,85 +121,6 @@ class ELASTIC_NW:
 
         return events
 
-    def find_player_candidate_frames(
-        self, episode_id: int, player_id: int, episode_tracking: pd.DataFrame = None
-    ) -> pd.DataFrame:
-        """Compute candidate frames for a (episode, player) pair."""
-        output_cols = ["episode_id", "frame_id", "player_id", "player_dist", "ball_height", "ball_accel"]
-        episode_frames = self.frames[self.frames["episode_id"] == episode_id].index.values
-        if len(episode_frames) == 0:
-            return pd.DataFrame(columns=output_cols)
-
-        if episode_tracking is None:
-            episode_tracking = self.tracking[self.tracking["frame_id"].isin(episode_frames)]
-
-        ball_data = episode_tracking[episode_tracking["ball"]].set_index("frame_id")
-        player_data = episode_tracking[episode_tracking["player_id"] == player_id].set_index("frame_id")
-        common_frames = player_data.index.intersection(ball_data.index)
-        if player_data.empty or ball_data.empty or len(common_frames) == 0:
-            return pd.DataFrame(columns=output_cols)
-
-        player_subset: pd.DataFrame = player_data.loc[common_frames]
-        ball_subset: pd.DataFrame = ball_data.loc[common_frames]
-
-        player_x = player_subset["x"].values
-        player_y = player_subset["y"].values
-        ball_x = ball_subset["x"].values
-        ball_y = ball_subset["y"].values
-
-        player_dists = np.sqrt((player_x - ball_x) ** 2 + (player_y - ball_y) ** 2)
-        ball_heights = ball_subset["z"].values
-        ball_accels = ball_subset["accel_v"].values
-
-        features = pd.DataFrame(
-            {
-                "episode_id": episode_id,
-                "frame_id": common_frames,
-                "player_id": player_id,
-                "player_dist": player_dists,
-                "ball_height": ball_heights,
-                "ball_accel": ball_accels,
-            }
-        ).set_index("frame_id")
-        features = features.sort_index()
-
-        dist_valleys = find_peaks(-features["player_dist"].values, prominence=1)[0]
-        height_valleys = find_peaks(-features["ball_height"].values, prominence=0.5)[0]
-        accel_peaks = find_peaks(features["ball_accel"].values, prominence=10, distance=10)[0]
-
-        candidates = set(dist_valleys.tolist())
-        for i in height_valleys:
-            if not any(abs(i - c) <= 3 for c in candidates):
-                candidates.add(i)
-        for i in accel_peaks:
-            if not any(abs(i - c) <= 3 for c in candidates):
-                candidates.add(i)
-
-        first_pos = features.index.get_indexer([episode_frames[0]])[0]
-        if first_pos >= 0:
-            candidates.add(int(first_pos))
-        last_pos = features.index.get_indexer([episode_frames[-1]])[0]
-        if last_pos >= 0:
-            candidates.add(int(last_pos))
-
-        if len(candidates) == 0:
-            return pd.DataFrame(columns=output_cols)
-
-        candidates = sorted(candidates)
-        cand_features = features.iloc[candidates].copy()
-
-        for idx in cand_features.index:
-            window_start = max(features.index[0], idx - 3)
-            window_end = min(features.index[-1], idx + 3)
-            window = features.loc[window_start:window_end]
-
-            cand_features.at[idx, "player_dist"] = window["player_dist"].min()
-            cand_features.at[idx, "ball_height"] = window["ball_height"].min()
-            cand_features.at[idx, "ball_accel"] = window["ball_accel"].max()
-
-        valid_mask = (cand_features["player_dist"] < 3) & (cand_features["ball_height"] < 3.5)
-        return cand_features[valid_mask].reset_index()
-
     def find_candidate_frames(self, period: int = None) -> pd.DataFrame:
         """Find candidate frames for alignment based on physical constraints.
 
@@ -222,7 +143,16 @@ class ELASTIC_NW:
             DataFrame with columns ['episode_id', 'frame_id', 'player_id', 'player_dist', 'ball_height', 'ball_accel']
             containing all candidate frames per player.
         """
-        output_cols = ["episode_id", "frame_id", "player_id", "player_dist", "ball_height", "ball_accel"]
+        output_cols = [
+            "episode_id",
+            "frame_id",
+            "player_id",
+            "player_dist",
+            "ball_height",
+            "ball_accel",
+            "oppo_id",
+            "oppo_dist",
+        ]
         if period is None:
             tracking = self.tracking.copy()
             frames = self.frames
@@ -237,10 +167,89 @@ class ELASTIC_NW:
         cand_frames: List[pd.DataFrame] = []
 
         for episode_id, episode_tracking in tqdm(tracking.groupby("episode_id"), desc="Detecting candidate frames"):
-            players = episode_tracking["player_id"].dropna().unique()
-            for player_id in players:
-                player_cand_frames = self.find_player_candidate_frames(episode_id, player_id, episode_tracking)
-                cand_frames.append(player_cand_frames)
+            episode_frames = frames[frames["episode_id"] == episode_id].index.values
+            if len(episode_frames) == 0:
+                continue
+
+            ball_data = episode_tracking[episode_tracking["ball"]].set_index("frame_id").sort_index()
+            if ball_data.empty:
+                continue
+
+            ball_heights = ball_data["z"].to_numpy()
+            ball_accels = ball_data["accel_v"].to_numpy()
+            height_valleys = find_peaks(-ball_heights, prominence=0.5)[0]
+            accel_peaks = find_peaks(ball_accels, prominence=10, distance=10)[0]
+            height_peak_frames = ball_data.index[height_valleys] if height_valleys.size > 0 else []
+            accel_peak_frames = ball_data.index[accel_peaks] if accel_peaks.size > 0 else []
+
+            player_data = episode_tracking[episode_tracking["player_id"].notna()]
+            if player_data.empty:
+                continue
+
+            ball_features = ball_data[["x", "y", "z", "accel_v"]].copy()
+            ball_features.columns = ["ball_x", "ball_y", "ball_height", "ball_accel"]
+            merged = player_data.merge(ball_features, left_on="frame_id", right_index=True, how="inner")
+            if merged.empty:
+                continue
+
+            dist_x = merged["x"] - merged["ball_x"]
+            dist_y = merged["y"] - merged["ball_y"]
+            merged["player_dist"] = np.sqrt(dist_x**2 + dist_y**2)
+
+            episode_cands: List[pd.DataFrame] = []
+            for player_id, group in merged.groupby("player_id"):
+                features = group.set_index("frame_id")[["player_dist", "ball_height", "ball_accel"]].sort_index()
+                if features.empty:
+                    continue
+
+                dist_valleys = find_peaks(-features["player_dist"].values, prominence=1)[0]
+                height_pos = features.index.get_indexer(height_peak_frames)
+                height_pos = height_pos[height_pos >= 0]
+                accel_pos = features.index.get_indexer(accel_peak_frames)
+                accel_pos = accel_pos[accel_pos >= 0]
+
+                cand_idx = set(dist_valleys.tolist())
+                for i in height_pos:
+                    if not any(abs(i - c) <= 3 for c in cand_idx):
+                        cand_idx.add(int(i))
+                for i in accel_pos:
+                    if not any(abs(i - c) <= 3 for c in cand_idx):
+                        cand_idx.add(int(i))
+
+                first_pos = features.index.get_indexer([episode_frames[0]])[0]
+                if first_pos >= 0:
+                    cand_idx.add(int(first_pos))
+                last_pos = features.index.get_indexer([episode_frames[-1]])[0]
+                if last_pos >= 0:
+                    cand_idx.add(int(last_pos))
+
+                if len(cand_idx) == 0:
+                    continue
+
+                cand_idx = sorted(cand_idx)
+                player_cands = features.iloc[cand_idx].copy()
+                player_cands["episode_id"] = episode_id
+                player_cands["player_id"] = player_id
+
+                for idx in player_cands.index:
+                    window_start = max(features.index[0], idx - 3)
+                    window_end = min(features.index[-1], idx + 3)
+                    window = features.loc[window_start:window_end]
+
+                    player_cands.at[idx, "player_dist"] = window["player_dist"].min()
+                    player_cands.at[idx, "ball_height"] = window["ball_height"].min()
+                    player_cands.at[idx, "ball_accel"] = window["ball_accel"].max()
+
+                valid_mask = (player_cands["player_dist"] < 3) & (player_cands["ball_height"] < 3.5)
+                player_cands = player_cands[valid_mask].reset_index()
+                episode_cands.append(player_cands)
+
+            if len(episode_cands) == 0:
+                continue
+
+            episode_cands = pd.concat(episode_cands, ignore_index=True)
+            episode_cands = self.calculate_oppo_features(episode_cands, merged_data=merged)
+            cand_frames.append(episode_cands[output_cols])
 
         if len(cand_frames) == 0:
             return pd.DataFrame(columns=output_cols)
@@ -296,44 +305,66 @@ class ELASTIC_NW:
 
         return output
 
-    def calculate_oppo_features(self, cand_frames: pd.DataFrame) -> pd.DataFrame:
+    def calculate_oppo_features(self, cand_frames: pd.DataFrame, merged_data: pd.DataFrame = None) -> pd.DataFrame:
         """
-        Add opponent features based on other candidates in the same frame.
+        Add opponent features based on players within 3m of the ball in the same frame.
 
-        oppo_id/oppo_dist are taken from the closest opponent in the same frame_id.
+        oppo_id/oppo_dist are taken from the closest opponent (by player_dist) in the same frame_id.
         """
-        cand_frames = cand_frames.copy()
-        cand_frames["oppo_id"] = np.nan
-        cand_frames["oppo_dist"] = np.nan
+        output = cand_frames.copy()
+        output["oppo_id"] = np.nan
+        output["oppo_dist"] = np.nan
 
-        if cand_frames.empty:
-            return cand_frames
+        if output.empty:
+            return output
 
-        def find_frame_oppo_features(group: pd.DataFrame) -> pd.DataFrame:
-            if len(group) < 2:
-                return group
-            group = group.copy()
-            team_prefix = group["player_id"].astype(str).str[:4]
-
-            oppo_ids = []
-            oppo_dists = []
-
-            for idx, row in group.iterrows():
-                opponents = group[team_prefix != team_prefix.at[idx]]
-                if opponents.empty:
-                    oppo_ids.append(np.nan)
-                    oppo_dists.append(np.nan)
+        if merged_data is None:
+            player_data = self.tracking.loc[self.tracking["player_id"].notna(), ["frame_id", "player_id", "x", "y"]]
+            ball_data = self.tracking.loc[self.tracking["ball"], ["frame_id", "x", "y"]]
+            merged_data = player_data.merge(ball_data.rename(columns={"x": "ball_x", "y": "ball_y"}), on="frame_id")
+            if merged_data.empty:
+                return output
+            dist_x = merged_data["x"] - merged_data["ball_x"]
+            dist_y = merged_data["y"] - merged_data["ball_y"]
+            merged_data["player_dist"] = np.sqrt(dist_x**2 + dist_y**2)
+        else:
+            merged_data = merged_data.copy()
+            if "player_dist" not in merged_data.columns:
+                if {"x", "y", "ball_x", "ball_y"}.issubset(merged_data.columns):
+                    dist_x = merged_data["x"] - merged_data["ball_x"]
+                    dist_y = merged_data["y"] - merged_data["ball_y"]
+                    merged_data["player_dist"] = np.sqrt(dist_x**2 + dist_y**2)
                 else:
-                    closest = opponents.sort_values("player_dist", na_position="last").iloc[0]
-                    oppo_ids.append(closest["player_id"])
-                    oppo_dists.append(closest["player_dist"])
+                    return output
 
-            group["oppo_id"] = oppo_ids
-            group["oppo_dist"] = oppo_dists
+        eligible = merged_data[merged_data["player_dist"] <= 3].copy()
+        if eligible.empty:
+            return output
 
-            return group
+        eligible["team"] = eligible["player_id"].astype(str).str[:4]
+        eligible = eligible.sort_values(["frame_id", "team", "player_dist"], na_position="last")
+        min_by_team = eligible.drop_duplicates(["frame_id", "team"])
 
-        return cand_frames.groupby("frame_id", group_keys=False).apply(find_frame_oppo_features)
+        home_min = min_by_team[min_by_team["team"] == "home"][["frame_id", "player_id", "player_dist"]]
+        away_min = min_by_team[min_by_team["team"] == "away"][["frame_id", "player_id", "player_dist"]]
+        home_min.columns = ["frame_id", "home_id", "home_dist"]
+        away_min.columns = ["frame_id", "away_id", "away_dist"]
+
+        output["team"] = output["player_id"].astype(str).str[:4]
+        output = output.merge(home_min, on="frame_id", how="left").merge(away_min, on="frame_id", how="left")
+
+        output["oppo_id"] = np.where(
+            output["team"] == "home",
+            output["away_id"],
+            np.where(output["team"] == "away", output["home_id"], np.nan),
+        )
+        output["oppo_dist"] = np.where(
+            output["team"] == "home",
+            output["away_dist"],
+            np.where(output["team"] == "away", output["home_dist"], np.nan),
+        )
+
+        return output.drop(columns=["team", "home_id", "home_dist", "away_id", "away_dist"])
 
     def align_episode(
         self, episode_id: int, cand_frames: pd.DataFrame = None
@@ -365,9 +396,6 @@ class ELASTIC_NW:
 
         if "pre_kick_dist" not in cand_frames.columns:
             cand_frames = self.calculate_kick_dists(cand_frames)
-
-        if "oppo_dist" not in cand_frames.columns:
-            cand_frames = self.calculate_oppo_features(cand_frames)
 
         event_types = config.PASS_LIKE_OPEN + config.SET_PIECE + config.INCOMING + ["bad_touch"]
         ep_events = events[(events["episode_id"] == episode_id) & (events["spadl_type"].isin(event_types))]
@@ -514,9 +542,6 @@ class ELASTIC_NW:
 
         if "pre_kick_dist" not in self.cand_frames.columns:
             self.cand_frames = self.calculate_kick_dists(self.cand_frames)
-
-        if "oppo_dist" not in self.cand_frames.columns:
-            self.cand_frames = self.calculate_oppo_features(self.cand_frames)
 
         matches = []
         for episode_id in tqdm(self.frames["episode_id"].unique(), desc="Needleman-Wunsch alignment"):
