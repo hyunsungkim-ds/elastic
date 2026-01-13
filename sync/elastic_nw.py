@@ -367,6 +367,37 @@ class ELASTIC_NW:
 
         return output.drop(columns=["team", "home_id", "home_dist", "away_id", "away_dist"])
 
+    def _append_foul_alignment(self, aligned: pd.DataFrame, ep_frames: pd.DataFrame) -> pd.DataFrame:
+        aligned_frames = aligned["frame_id"].dropna()
+        if aligned_frames.empty:
+            return aligned
+
+        episode_id = aligned["episode_id"].iloc[0]
+        episode_events: pd.DataFrame = self.events[self.events["episode_id"] == episode_id]
+        if episode_events.empty or episode_events["spadl_type"].iloc[-1] != "foul":
+            return aligned
+
+        foul_event: pd.Series = episode_events.iloc[-1].copy()
+        last_aligned_frame = aligned_frames.iloc[-1]
+
+        foul_frame_id = np.nan
+        foul_timestamp = np.nan
+
+        player_cands = ep_frames[ep_frames["player_id"] == foul_event["player_id"]]
+        if not player_cands.empty:
+            last_cand = player_cands.sort_values("frame_id").iloc[-1]
+            last_cand_frame = last_cand["frame_id"]
+            if pd.notna(last_cand_frame) and last_cand_frame >= last_aligned_frame:
+                foul_frame_id = last_cand_frame
+                foul_timestamp = self.frames.at[last_cand_frame, "timestamp"]
+
+        foul_event["frame_id"] = foul_frame_id
+        foul_event["timestamp"] = foul_timestamp
+        foul_event["score"] = np.nan
+
+        aligned.loc[foul_event.name] = foul_event[config.ALIGNED_COLS]
+        return aligned
+
     def align_episode(
         self, episode_id: int, cand_frames: pd.DataFrame = None
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -537,6 +568,7 @@ class ELASTIC_NW:
         path = pd.DataFrame(path_rows)
 
         aligned = pd.concat([events.loc[matches.index], matches], axis=1)[config.ALIGNED_COLS]
+        aligned = self._append_foul_alignment(aligned, ep_frames)
         score_mat = pd.DataFrame(score_mat, index=ep_events.index, columns=ep_frame_ids)
         return aligned, score_mat, dp_mat, path
 
