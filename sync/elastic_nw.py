@@ -104,7 +104,7 @@ class ELASTIC_NW:
         """
         events = events.copy()
         events["episode_id"] = 0
-        allowed_start_types = config.SET_PIECE + ["pass", "control"]
+        allowed_start_types = config.SET_PIECE + ["pass", "cross", "control"]
 
         for period_id in events["period_id"].dropna().unique():
             period_events: pd.DataFrame = events[events["period_id"] == period_id]
@@ -168,6 +168,7 @@ class ELASTIC_NW:
             "oppo_id",
             "oppo_dist",
         ]
+
         if period is None:
             tracking = self.tracking.copy()
             frames = self.frames
@@ -177,6 +178,10 @@ class ELASTIC_NW:
 
         if self.tracking.empty or self.frames.empty:
             return pd.DataFrame(columns=output_cols)
+
+        events = self.events.copy()
+        if "episode_id" not in events.columns:
+            events = self.find_event_episodes(events)
 
         tracking = tracking.merge(frames["episode_id"], left_on="frame_id", right_index=True, how="inner")
         cand_frames: List[pd.DataFrame] = []
@@ -263,6 +268,34 @@ class ELASTIC_NW:
                 continue
 
             episode_cands = pd.concat(episode_cands, ignore_index=True)
+
+            first_frame_id = int(episode_frames[0])
+            if first_frame_id not in episode_cands["frame_id"].values:
+                episode_events = events[events["episode_id"] == episode_id].copy()
+
+                if not episode_events.empty:
+                    first_player_id = episode_events["player_id"].iloc[0]
+                    mask = (merged["frame_id"] == first_frame_id) & (merged["player_id"] == first_player_id)
+                    tracking_row = merged[mask]
+
+                    if not tracking_row.empty:
+                        player_dist = float(tracking_row["player_dist"].iloc[0])
+                        ball_height = float(tracking_row["ball_height"].iloc[0])
+                        ball_accel = float(tracking_row["ball_accel"].iloc[0])
+                        first_row = pd.DataFrame(
+                            [
+                                {
+                                    "episode_id": episode_id,
+                                    "frame_id": first_frame_id,
+                                    "player_id": first_player_id,
+                                    "player_dist": player_dist,
+                                    "ball_height": ball_height,
+                                    "ball_accel": ball_accel,
+                                }
+                            ]
+                        )
+                    episode_cands = pd.concat([first_row, episode_cands], ignore_index=True)
+
             episode_cands = self.calculate_oppo_features(episode_cands, merged_data=merged)
             cand_frames.append(episode_cands[output_cols])
 
