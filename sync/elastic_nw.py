@@ -408,26 +408,21 @@ class ELASTIC_NW:
         foul_event: pd.Series = episode_events.iloc[-1].copy()
         last_aligned_frame = aligned_frames.iloc[-1]
 
-        foul_frame_id = np.nan
-        foul_timestamp = np.nan
-
         player_cands = ep_frames[ep_frames["player_id"] == foul_event["player_id"]]
         if not player_cands.empty:
             last_cand = player_cands.sort_values("frame_id").iloc[-1]
             last_cand_frame = last_cand["frame_id"]
             if pd.notna(last_cand_frame) and last_cand_frame >= last_aligned_frame:
-                foul_frame_id = last_cand_frame
-                foul_timestamp = self.frames.at[last_cand_frame, "timestamp"]
+                foul_event["frame_id"] = last_cand_frame
+                foul_event["timestamp"] = self.frames.at[last_cand_frame, "timestamp"]
+                foul_event["score"] = np.nan
+                aligned.loc[foul_event.name] = foul_event[config.ALIGNED_COLS]
+                return aligned
 
-        foul_event["frame_id"] = foul_frame_id
-        foul_event["timestamp"] = foul_timestamp
-        foul_event["score"] = np.nan
-
-        aligned.loc[foul_event.name] = foul_event[config.ALIGNED_COLS]
         return aligned
 
     def align_episode(
-        self, episode_id: int, cand_frames: pd.DataFrame = None
+        self, episode_id: int, events: pd.DataFrame = None, cand_frames: pd.DataFrame = None
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Align events and candidate frames for a single episode using Needleman-Wunsch algorithm.
@@ -444,11 +439,15 @@ class ELASTIC_NW:
         path : pd.DataFrame
             Optimal alignment path with event/frame positions, ids, and timestamps.
         """
-        if "episode_id" not in self.events.columns:
-            events = self.find_event_episodes(self.events)
-        else:
+        if events is None:
+            assert isinstance(events, pd.DataFrame)
             events = self.events.copy()
-        events = events.drop(columns=["frame_id", "synced_ts"], errors="ignore")
+
+        if "episode_id" not in events.columns:
+            events = self.find_event_episodes(events)
+        else:
+            events = events.copy()
+        events = events.drop(columns=["frame_id", "synced_ts", "score"], errors="ignore")
 
         if cand_frames is None:
             assert isinstance(self.cand_frames, pd.DataFrame)
@@ -600,10 +599,12 @@ class ELASTIC_NW:
         score_mat = pd.DataFrame(score_mat, index=ep_events.index, columns=ep_frame_ids)
         return aligned, score_mat, dp_mat, path
 
-    def run(self) -> pd.DataFrame:
+    def run(self, events: pd.DataFrame) -> pd.DataFrame:
         """
         Runs Needleman-Wunsch alignment across the full match by episode.
         """
+        events = events.copy().drop(columns=["frame_id", "synced_ts", "score"], errors="ignore")
+
         if self.cand_frames is None:
             self.cand_frames = self.find_candidate_frames()
 
@@ -612,23 +613,23 @@ class ELASTIC_NW:
 
         matches = []
         for episode_id in tqdm(self.frames["episode_id"].unique(), desc="Needleman-Wunsch alignment"):
-            episode_matches, _, _, _ = self.align_episode(episode_id)
+            episode_matches, _, _, _ = self.align_episode(episode_id, events)
             if not episode_matches.empty:
                 matches.append(episode_matches)
 
         if len(matches) > 0:
             aligned = pd.concat(matches).sort_index()
-            self.events.loc[aligned.index, "frame_id"] = aligned["frame_id"]
+            events.loc[aligned.index, "frame_id"] = aligned["frame_id"].round()
+            events.loc[aligned.index, "score"] = aligned["score"]
+            events.loc[events["score"] < 30, "frame_id"] = np.nan
         else:
             aligned = pd.DataFrame(columns=config.ALIGNED_COLS)
 
-        self.events["synced_ts"] = self.events["frame_id"].map(self.frames["timestamp"].to_dict())
+        events["synced_ts"] = events["frame_id"].map(self.frames["timestamp"].to_dict())
 
         one_touch_mask = (
-            (self.events["spadl_type"] == "control")
-            & self.events["frame_id"].notna()
-            & (self.events["frame_id"] == self.events["frame_id"].shift(-1))
+            (events["spadl_type"] == "control")
+            & events["frame_id"].notna()
+            & (events["frame_id"] == events["frame_id"].shift(-1))
         )
-        self.events = self.events.loc[~one_touch_mask].reset_index(drop=True)
-
-        return aligned
+        return events.loc[~one_touch_mask].reset_index(drop=True)
