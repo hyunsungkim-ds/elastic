@@ -105,12 +105,9 @@ class ELASTIC_NW:
         events = events.copy()
         events["episode_id"] = 0
         allowed_start_types = config.SET_PIECE + ["pass", "control"]
-        episode_period_map = self.frames.groupby("episode_id")["period_id"].first().to_dict()
 
         for period_id in events["period_id"].dropna().unique():
             period_events: pd.DataFrame = events[events["period_id"] == period_id]
-            if period_events.empty:
-                continue
             period_events_sorted = period_events.sort_values("utc_timestamp").reset_index()
 
             period_frames = self.frames[self.frames["period_id"] == period_id].sort_values("utc_timestamp")
@@ -124,28 +121,18 @@ class ELASTIC_NW:
             )
             events.loc[aligned["index"], "episode_id"] = aligned["episode_id"].values
 
-            period_mask = events["period_id"] == period_id
-            if not period_mask.any():
-                continue
             period_episode_ids = self.frames.loc[self.frames["period_id"] == period_id, "episode_id"].unique()
             for episode_id in sorted(period_episode_ids, reverse=True):
-                if episode_period_map.get(episode_id) != period_id:
-                    continue
-                ep_events = events[period_mask & (events["episode_id"] == episode_id)].sort_values("utc_timestamp")
-                if ep_events.empty:
-                    continue
+                ep_events = events[events["episode_id"] == episode_id].sort_values("utc_timestamp")
                 allowed_mask = ep_events["spadl_type"].isin(allowed_start_types).to_numpy()
-                if allowed_mask.any():
-                    first_allowed_pos = int(np.flatnonzero(allowed_mask)[0])
-                else:
-                    first_allowed_pos = len(ep_events)
-                if first_allowed_pos == 0:
+                if not allowed_mask.any():
                     continue
+
+                first_allowed_pos = int(np.flatnonzero(allowed_mask)[0])
                 prev_episode_id = episode_id - 1
-                if episode_period_map.get(prev_episode_id) != period_id:
-                    continue
-                prefix_idx = ep_events.index[:first_allowed_pos]
-                events.loc[prefix_idx, "episode_id"] = prev_episode_id
+                if first_allowed_pos > 0 and prev_episode_id in period_episode_ids:
+                    prefix_idx = ep_events.index[:first_allowed_pos]
+                    events.loc[prefix_idx, "episode_id"] = prev_episode_id
 
         return events
 
@@ -625,11 +612,9 @@ class ELASTIC_NW:
         else:
             aligned = pd.DataFrame(columns=config.ALIGNED_COLS)
 
-        events["synced_ts"] = events["frame_id"].map(self.frames["timestamp"].to_dict())
+        events["timestamp"] = events["frame_id"].map(self.frames["timestamp"].to_dict())
 
-        one_touch_mask = (
-            (events["spadl_type"] == "control")
-            & events["frame_id"].notna()
-            & (events["frame_id"] == events["frame_id"].shift(-1))
-        )
-        return events.loc[~one_touch_mask].reset_index(drop=True)
+        control_mask = events["spadl_type"] == "control"
+        one_touch_mask = (events["frame_id"].shift(-1) == events["frame_id"]) | events["frame_id"].shift(-1).isna()
+        events = events.loc[~(control_mask & one_touch_mask)].reset_index(drop=True)
+        return events[config.ALIGNED_COLS + ["start_x", "start_y", "utc_timestamp"]]

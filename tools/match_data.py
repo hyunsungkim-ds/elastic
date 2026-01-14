@@ -129,15 +129,14 @@ class MatchData(ABC):
     def merge_synced_events_and_tracking(
         events: pd.DataFrame, tracking: pd.DataFrame, fps=25, ffill=False
     ) -> pd.DataFrame:
-        assert "synced_ts" in events.columns
+        assert "timestamp" in events.columns
 
         column_mapping = {"spadl_type": "event_type", "start_x": "annot_x", "start_y": "annot_y"}
         events = events.copy().rename(columns=column_mapping)
 
-        synced_cols = ["period_id", "synced_ts", "player_id", "event_type"]
-        synced_events = events.loc[events["synced_ts"].notna(), synced_cols].copy().reset_index(drop=True)
-        synced_events["timestamp"] = synced_events["synced_ts"].apply(timestamp_to_seconds).round(3)
-        synced_events.drop("synced_ts", axis=1, inplace=True)
+        synced_cols = ["period_id", "timestamp", "player_id", "event_type"]
+        synced_events = events.loc[events["timestamp"].notna(), synced_cols].copy().reset_index(drop=True)
+        synced_events["timestamp"] = synced_events["timestamp"].apply(timestamp_to_seconds).round(3)
 
         annot_cols = ["period_id", "utc_timestamp", "annot_x", "annot_y"]
         annot_events = events[annot_cols].copy()

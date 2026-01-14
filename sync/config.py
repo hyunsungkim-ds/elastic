@@ -75,4 +75,4 @@ EVENT_COLS = [
     "expected_goal",
 ]
 NEXT_EVENT_COLS = ["next_player_id", "next_type", "receiver_id", "receive_frame_id", "receive_ts"]
-ALIGNED_COLS = ["frame_id", "episode_id", "period_id", "timestamp", "player_id", "spadl_type", "score"]
+ALIGNED_COLS = ["frame_id", "period_id", "episode_id", "timestamp", "player_id", "spadl_type", "success", "score"]
