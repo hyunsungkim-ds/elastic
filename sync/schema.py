@@ -1,5 +1,5 @@
 import numpy as np
-from pandera import Check, Column, DataFrameSchema, Index
+from pandera.pandas import Check, Column, DataFrameSchema, Index
 
 from sync import config
 
@@ -7,7 +7,7 @@ elastic_event_schema = DataFrameSchema(
     {
         "period_id": Column(int, Check(lambda s: s.isin([1, 2]))),
         "utc_timestamp": Column(np.dtype("datetime64[ns]")),
-        "player_id": Column(object),
+        "player_id": Column(str),
         "spadl_type": Column(str, Check(lambda s: s.isin(config.SPADL_TYPES))),
         "success": Column(bool),
         # "offside": Column(bool),
@@ -19,7 +19,7 @@ etsy_event_schema = DataFrameSchema(
     {
         "period_id": Column(int, Check(lambda s: s.isin([1, 2]))),
         "utc_timestamp": Column(np.dtype("datetime64[ns]")),
-        "player_id": Column(object),
+        "player_id": Column(str),
         "spadl_type": Column(str, Check(lambda s: s.isin(config.SPADL_TYPES))),
         "start_x": Column(float, Check(lambda s: (s >= 0) & (s <= config.PITCH_X))),
         "start_y": Column(float, Check(lambda s: (s >= 0) & (s <= config.PITCH_Y))),
@@ -33,7 +33,7 @@ synced_event_schema = DataFrameSchema(
         "period_id": Column(int, Check(lambda s: s.isin([1, 2]))),
         "utc_timestamp": Column(np.dtype("datetime64[ns]")),
         "frame_id": Column(float, Check(lambda s: (s >= 0) & (round(s) == s)), nullable=True),
-        "player_id": Column(object),
+        "player_id": Column(str),
         "spadl_type": Column(str, Check(lambda s: s.isin(config.SPADL_TYPES))),
         "success": Column(bool),
         # "offside": Column(bool),
@@ -47,7 +47,7 @@ tracking_schema = DataFrameSchema(
         "period_id": Column(int, Check(lambda s: s.isin([1, 2]))),
         "timestamp": Column(float),
         "utc_timestamp": Column(np.dtype("datetime64[ns]")),
-        "player_id": Column(object, nullable=True),  # Mandatory for players (not ball)
+        "player_id": Column(str, nullable=True),  # Mandatory for players (not ball)
         "ball": Column(bool),
         "x": Column(float),
         "y": Column(float),
