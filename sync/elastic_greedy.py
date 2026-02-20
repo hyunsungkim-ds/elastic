@@ -15,8 +15,8 @@ from sync import config, schema, utils
 from sync.receive import ReceiveDetector
 
 
-class ELASTIC:
-    """Synchronize event and tracking data using Event-Location-AgnoSTIC Synchronizer (ELASTIC).
+class ELASTIC_Greedy:
+    """Greedily synchronize event and tracking data in chronological order.
 
     Parameters
     ----------
@@ -486,7 +486,7 @@ class ELASTIC:
     def _detect_second_take_on(
         features: pd.DataFrame, fps=25, savgol_wlen=9
     ) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
-        return ELASTIC._detect_take_on(features, fps, savgol_wlen, secondary=True)
+        return ELASTIC_Greedy._detect_take_on(features, fps, savgol_wlen, secondary=True)
 
     @staticmethod
     def _detect_dispossessed(features: pd.DataFrame, fps=25, savgol_wlen=9) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
@@ -545,28 +545,28 @@ class ELASTIC:
     def _find_matching_func(event_type: str) -> Tuple[float, Callable]:
         if event_type in config.PASS_LIKE_OPEN + ["bad_touch"]:
             s = config.TIME_PASS_LIKE_OPEN
-            matching_func = ELASTIC._detect_pass_like
+            matching_func = ELASTIC_Greedy._detect_pass_like
         elif event_type in config.SET_PIECE:
             s = config.TIME_SET_PIECE
-            matching_func = ELASTIC._detect_setpiece
+            matching_func = ELASTIC_Greedy._detect_setpiece
         elif event_type in config.INCOMING:
             s = config.TIME_INCOMING
-            matching_func = ELASTIC._detect_incoming
+            matching_func = ELASTIC_Greedy._detect_incoming
         elif event_type == "tackle":
             s = config.TIME_INCOMING
-            matching_func = ELASTIC._detect_tackle
+            matching_func = ELASTIC_Greedy._detect_tackle
         elif event_type == "take_on":
             s = config.TIME_MINOR
-            matching_func = ELASTIC._detect_take_on
+            matching_func = ELASTIC_Greedy._detect_take_on
         elif event_type == "second_take_on":
             s = config.TIME_MINOR
-            matching_func = ELASTIC._detect_second_take_on
+            matching_func = ELASTIC_Greedy._detect_second_take_on
         elif event_type == "dispossessed":
             s = config.TIME_MINOR
-            matching_func = ELASTIC._detect_dispossessed
+            matching_func = ELASTIC_Greedy._detect_dispossessed
         elif event_type == "foul":
             s = config.TIME_MINOR
-            matching_func = ELASTIC._detect_foul
+            matching_func = ELASTIC_Greedy._detect_foul
         else:
             s = 0
             matching_func = None
@@ -650,7 +650,7 @@ class ELASTIC:
             ):
                 min_frame += 5
 
-            s, matching_func = ELASTIC._find_matching_func(event_type)
+            s, matching_func = ELASTIC_Greedy._find_matching_func(event_type)
             windows = self._window_of_frames(self.events.loc[i], s, min_frame)
 
             if len(windows[1]) > 0:
@@ -711,7 +711,7 @@ class ELASTIC:
             else:
                 max_frame = np.nanmin([np.nanmin(next_frames), self.frames.index[-1]])
 
-            s, matching_func = ELASTIC._find_matching_func(event_type)
+            s, matching_func = ELASTIC_Greedy._find_matching_func(event_type)
             windows = self._window_of_frames(minor_events.loc[i], s, min_frame, max_frame)
 
             if len(windows[1]) > 0:
@@ -790,7 +790,7 @@ class ELASTIC:
         if event_idx > 0 and self.events.at[event_idx - 1, "spadl_type"] == "take_on" and event_type == "take_on":
             event_type = "second_take_on"
 
-        s, matching_func = ELASTIC._find_matching_func(event_type)
+        s, matching_func = ELASTIC_Greedy._find_matching_func(event_type)
         print(f"Event {event_idx}: {event_type} by {event['player_id']}")
 
         prev_matched = self.matched_frames.loc[: event_idx - 1].dropna() if event_idx > 0 else np.array([0])
