@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from typing import Callable, Union
 
 import numpy as np
@@ -6,15 +7,18 @@ import pandas as pd
 from sync.config import PITCH_X, PITCH_Y
 
 
+def frame_to_utc_timestamp(frame: float, start_utc: datetime, fps=25) -> datetime:
+    return start_utc + timedelta(seconds=frame / fps) if not np.isnan(frame) else np.nan
+
+
 def seconds_to_timestamp(total_seconds: float) -> str:
     minutes = int(total_seconds // 60)
     seconds = total_seconds % 60
     return f"{minutes:02d}:{int(seconds):02d}{f'{seconds % 1:.2f}'[1:]}"
 
 
-def timestamp_to_seconds(timestamp: str) -> float:
-    minutes, seconds = timestamp.split(":")
-    return float(minutes) * 60 + float(seconds)
+def timestamp_to_seconds(t: str) -> float:
+    return float(t[:2]) * 60 + float(t[3:]) if isinstance(t, str) else np.nan
 
 
 def linear_scoring_func(min_input: float, max_input: float, increasing=False) -> Callable:
