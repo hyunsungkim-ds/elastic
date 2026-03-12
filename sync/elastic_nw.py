@@ -619,11 +619,14 @@ class ELASTIC_NW:
         score_mat = pd.DataFrame(score_mat, index=ep_events.index, columns=ep_frame_ids)
         return aligned, score_mat, dp_mat, path
 
-    def run(self, events: pd.DataFrame) -> pd.DataFrame:
+    def run(self, events: pd.DataFrame = None) -> pd.DataFrame:
         """
         Runs Needleman-Wunsch alignment across the full match by episode.
         """
-        events = events.copy().drop(columns=["frame_id", "synced_ts", "score"], errors="ignore")
+        if events is None:
+            events = self.events.copy().drop(columns=["frame_id", "synced_ts", "score"], errors="ignore")
+        else:
+            events = events.copy()
 
         if self.cand_frames is None:
             self.cand_frames = self.find_candidate_frames()
@@ -650,4 +653,5 @@ class ELASTIC_NW:
         control_mask = events["spadl_type"] == "control"
         one_touch_mask = (events["frame_id"].shift(-1) == events["frame_id"]) | events["frame_id"].shift(-1).isna()
         events = events.loc[~(control_mask & one_touch_mask)].reset_index(drop=True)
-        return events[config.ALIGNED_COLS + ["start_x", "start_y", "utc_timestamp"]]
+        # return events[config.ALIGNED_COLS + ["start_x", "start_y", "utc_timestamp"]]
+        return events[config.ALIGNED_COLS]

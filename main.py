@@ -21,7 +21,7 @@ if __name__ == "__main__":
         input_tracking = match.format_tracking_for_syncer()
 
         syncer = ELASTIC_NW(input_events, input_tracking)
-        synced_events = syncer.run(syncer.events)
+        synced_events = syncer.run()
 
         not_synced = synced_events[synced_events["frame_id"].isna()]
         print(f"{len(not_synced)} events are not aligned.")
