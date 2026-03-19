@@ -65,9 +65,52 @@ class ELASTIC_NW:
 
         if detect_controls:
             self.events = ELASTIC_NW.insert_control_events(self.events)
+            self.events = ELASTIC_NW.insert_out_events(self.events)
 
         # Precomputed candidate frames (to be filled by find_candidate_frames)
         self.cand_frames: pd.DataFrame = None
+
+    @staticmethod
+    def infer_out_player_id(event: pd.Series) -> str:
+        event_type = event.get("spadl_type")
+        x = pd.to_numeric(event.get("start_x"), errors="coerce")
+        y = pd.to_numeric(event.get("start_y"), errors="coerce")
+        if event_type == "throw_in":
+            return "out_top" if float(y) >= config.PITCH_Y / 2 else "out_bottom"
+        else:
+            return "out_left" if float(x) <= config.PITCH_X / 2 else "out_right"
+
+    @staticmethod
+    def insert_out_events(events: pd.DataFrame) -> pd.DataFrame:
+        """Insert virtual out events before OOP set pieces that end pass-like sequences."""
+        assert "episode_id" in events.columns
+
+        events = events.copy()
+        prev_events = events.shift(1)
+        pass_like_types = config.PASS_LIKE_OPEN + config.SET_PIECE
+        target_mask = (
+            events["spadl_type"].isin(config.SET_PIECE_OOP)
+            & prev_events["spadl_type"].isin(pass_like_types)
+            & (prev_events["period_id"] == events["period_id"])
+            & (prev_events["episode_id"] != events["episode_id"])
+            & (prev_events["utc_timestamp"] < events["utc_timestamp"])
+        )
+        if not target_mask.any():
+            return events
+
+        out_events = events.loc[target_mask].copy()
+        out_events["player_id"] = out_events.apply(ELASTIC_NW.infer_out_player_id, axis=1)
+        out_events["spadl_type"] = "out"
+        out_events["success"] = True
+        out_events["episode_id"] = prev_events.loc[target_mask, "episode_id"].to_numpy()
+        out_events["utc_timestamp"] = prev_events.loc[target_mask, "utc_timestamp"].to_numpy()
+
+        events["order"] = events.index.astype(float)
+        out_events["order"] = out_events.index.astype(float) - 0.5
+
+        combined = pd.concat([events, out_events], axis=0, ignore_index=False)
+        combined = combined.sort_values("order", kind="mergesort", ignore_index=True).drop(columns=["order"])
+        return combined
 
     @staticmethod
     def insert_control_events(events: pd.DataFrame) -> None:
@@ -144,6 +187,10 @@ class ELASTIC_NW:
         2. ball height < 3.5m
         3. it is a player-ball distance valley, ball height valley, or ball acceleration peak
 
+        Virtual out nodes (out_left/right/top/bottom) use ball-to-boundary
+        distances instead of player-ball distance and are kept only when that
+        distance is below 1m.
+
         Candidate detection is performed per (episode, player) to avoid crossing
         discontinuities in tracking data.
 
@@ -202,25 +249,22 @@ class ELASTIC_NW:
             height_peak_frames = ball_data.index[height_valleys] if height_valleys.size > 0 else []
             accel_peak_frames = ball_data.index[accel_peaks] if accel_peaks.size > 0 else []
 
-            player_data = episode_tracking[episode_tracking["player_id"].notna()]
-            if player_data.empty:
-                continue
-
             ball_features = ball_data[["x", "y", "z", "accel_v"]].copy()
             ball_features.columns = ["ball_x", "ball_y", "ball_height", "ball_accel"]
-            merged = player_data.merge(ball_features, left_on="frame_id", right_index=True, how="inner")
-            if merged.empty:
-                continue
-
-            dist_x = merged["x"] - merged["ball_x"]
-            dist_y = merged["y"] - merged["ball_y"]
-            merged["player_dist"] = np.sqrt(dist_x**2 + dist_y**2)
+            player_data = episode_tracking[episode_tracking["player_id"].notna()]
+            if player_data.empty:
+                merged = pd.DataFrame(columns=["frame_id", "player_id", "ball_height", "ball_accel", "player_dist"])
+            else:
+                merged = player_data.merge(ball_features, left_on="frame_id", right_index=True, how="inner")
+                dist_x = merged["x"] - merged["ball_x"]
+                dist_y = merged["y"] - merged["ball_y"]
+                merged["player_dist"] = np.sqrt(dist_x**2 + dist_y**2)
 
             episode_cands: List[pd.DataFrame] = []
-            for player_id, group in merged.groupby("player_id"):
-                features = group.set_index("frame_id")[["player_dist", "ball_height", "ball_accel"]].sort_index()
+
+            def _build_candidate_rows(features: pd.DataFrame, player_id: str) -> pd.DataFrame:
                 if features.empty:
-                    continue
+                    return pd.DataFrame()
 
                 dist_valleys = find_peaks(-features["player_dist"].values, prominence=1)[0]
                 height_pos = features.index.get_indexer(height_peak_frames)
@@ -239,12 +283,13 @@ class ELASTIC_NW:
                 first_pos = features.index.get_indexer([episode_frames[0]])[0]
                 if first_pos >= 0:
                     cand_idx.add(int(first_pos))
+
                 last_pos = features.index.get_indexer([episode_frames[-1]])[0]
                 if last_pos >= 0:
                     cand_idx.add(int(last_pos))
 
                 if len(cand_idx) == 0:
-                    continue
+                    return pd.DataFrame()
 
                 cand_idx = sorted(cand_idx)
                 player_cands = features.iloc[cand_idx].copy()
@@ -260,9 +305,35 @@ class ELASTIC_NW:
                     player_cands.at[idx, "ball_height"] = window["ball_height"].min()
                     player_cands.at[idx, "ball_accel"] = window["ball_accel"].max()
 
-                valid_mask = (player_cands["player_dist"] < 3) & (player_cands["ball_height"] < 3.5)
-                player_cands = player_cands[valid_mask].reset_index()
-                episode_cands.append(player_cands)
+                if str(player_id).startswith("out_"):
+                    valid_mask = player_cands["player_dist"] < 1
+                else:
+                    valid_mask = (player_cands["player_dist"] < 3) & (player_cands["ball_height"] < 3.5)
+                return player_cands[valid_mask].reset_index()
+
+            for player_id, group in merged.groupby("player_id"):
+                features = group.set_index("frame_id")[["player_dist", "ball_height", "ball_accel"]].sort_index()
+                player_cands = _build_candidate_rows(features, player_id)
+                if not player_cands.empty:
+                    episode_cands.append(player_cands)
+
+            out_feature_map = {
+                "out_left": ball_data["x"],
+                "out_right": config.PITCH_X - ball_data["x"],
+                "out_bottom": ball_data["y"],
+                "out_top": config.PITCH_Y - ball_data["y"],
+            }
+            for out_player_id, out_dists in out_feature_map.items():
+                out_features = pd.DataFrame(
+                    {
+                        "player_dist": out_dists,
+                        "ball_height": ball_data["z"],
+                        "ball_accel": ball_data["accel_v"],
+                    }
+                )
+                out_cands = _build_candidate_rows(out_features, out_player_id)
+                if not out_cands.empty:
+                    episode_cands.append(out_cands)
 
             if len(episode_cands) == 0:
                 continue
@@ -294,7 +365,7 @@ class ELASTIC_NW:
                                 }
                             ]
                         )
-                    episode_cands = pd.concat([first_row, episode_cands], ignore_index=True)
+                        episode_cands = pd.concat([first_row, episode_cands], ignore_index=True)
 
             episode_cands = self.calculate_oppo_features(episode_cands, merged_data=merged)
             cand_frames.append(episode_cands[output_cols])
@@ -350,6 +421,10 @@ class ELASTIC_NW:
                 next_frame = frames[i + 1] if i < len(frames) - 1 else episode_end
                 output.at[group_sorted.index[i], "pre_kick_dist"] = player_dists.loc[prev_frame:frame].max()
                 output.at[group_sorted.index[i], "post_kick_dist"] = player_dists.loc[frame:next_frame].max()
+
+        out_mask = output["player_id"].astype(str).str.startswith(("out_", "goal_"))
+        output.loc[out_mask & output["pre_kick_dist"].isna(), "pre_kick_dist"] = 5.0
+        output.loc[out_mask & output["post_kick_dist"].isna(), "post_kick_dist"] = 5.0
 
         return output
 
@@ -477,7 +552,7 @@ class ELASTIC_NW:
             cand_frames = self.calculate_kick_dists(cand_frames)
 
         minor_types = ["bad_touch", "tackle", "dispossessed"]
-        event_types = config.PASS_LIKE_OPEN + config.SET_PIECE + config.INCOMING + minor_types
+        event_types = config.PASS_LIKE_OPEN + config.SET_PIECE + config.INCOMING + minor_types + ["out"]
 
         ep_events = events[(events["episode_id"] == episode_id) & (events["spadl_type"].isin(event_types))]
         ep_frames = cand_frames[cand_frames["episode_id"] == episode_id]
@@ -486,7 +561,7 @@ class ELASTIC_NW:
         if ep_events.empty or len(ep_frame_ids) == 0:
             aligned = pd.DataFrame(columns=events.columns.tolist() + ["frame_id", "score"])
             score_mat = pd.DataFrame(index=ep_events.index, columns=ep_frame_ids, dtype=float)
-            path = pd.DataFrame(columns=["event_pos", "frame_pos", "event_idx", "frame_idx", "frame_id", "move"])
+            path = pd.DataFrame(columns=["event_pos", "frame_pos", "event_idx", "frame_id", "move"])
             dp_idx = [-1] + ep_events.index.tolist()
             dp_cols = [-1] + ep_frame_ids.tolist()
             dp_mat = pd.DataFrame(
@@ -601,7 +676,6 @@ class ELASTIC_NW:
                     "event_pos": event_pos,
                     "frame_pos": frame_pos,
                     "event_idx": ep_events.index[event_pos] if event_pos is not None else None,
-                    "frame_idx": ep_frame_ids[frame_pos] if frame_pos is not None else None,
                     "frame_id": ep_frame_ids[frame_pos] if frame_pos is not None else None,
                     "timestamp": timestamp,
                     "move": move,
@@ -619,7 +693,7 @@ class ELASTIC_NW:
         score_mat = pd.DataFrame(score_mat, index=ep_events.index, columns=ep_frame_ids)
         return aligned, score_mat, dp_mat, path
 
-    def run(self, events: pd.DataFrame = None) -> pd.DataFrame:
+    def run(self, events: pd.DataFrame = None, simplify_one_touch: bool = True) -> pd.DataFrame:
         """
         Runs Needleman-Wunsch alignment across the full match by episode.
         """
@@ -650,8 +724,9 @@ class ELASTIC_NW:
 
         events["timestamp"] = events["frame_id"].map(self.frames["timestamp"].to_dict())
 
-        control_mask = events["spadl_type"] == "control"
-        one_touch_mask = (events["frame_id"].shift(-1) == events["frame_id"]) | events["frame_id"].shift(-1).isna()
-        events = events.loc[~(control_mask & one_touch_mask)].reset_index(drop=True)
+        if simplify_one_touch:
+            control_mask = events["spadl_type"] == "control"
+            one_touch_mask = (events["frame_id"].shift(-1) == events["frame_id"]) | events["frame_id"].shift(-1).isna()
+            events = events.loc[~(control_mask & one_touch_mask)].reset_index(drop=True)
         # return events[config.ALIGNED_COLS + ["start_x", "start_y", "utc_timestamp"]]
         return events[config.ALIGNED_COLS]

@@ -35,12 +35,17 @@ def linear_scoring_func(min_input: float, max_input: float, increasing=False) ->
 
 # Scoring functions for ELASTIC
 player_dist_func = linear_scoring_func(1, 3, increasing=False)
+out_dist_func = linear_scoring_func(0, 1, increasing=False)
 player_speed_func = linear_scoring_func(0, 5, increasing=True)
 player_accel_func = linear_scoring_func(0, 5, increasing=True)
 ball_accel_func = linear_scoring_func(0, 20, increasing=True)
 kick_dist_func = linear_scoring_func(0, 5, increasing=True)
 angle_change_func = linear_scoring_func(-1, 1, increasing=False)  # increasing from 0 to pi in radian
 frame_delay_func = linear_scoring_func(0, 125, increasing=False)
+
+
+def _dist_func_for_player(player_id: str) -> Callable:
+    return out_dist_func if player_id.startswith(("out_", "goal_")) else player_dist_func
 
 
 def score_nw(features: pd.Series | pd.DataFrame, player_id: str, kick_dist_col: str) -> float | np.ndarray:
@@ -53,15 +58,17 @@ def score_nw(features: pd.Series | pd.DataFrame, player_id: str, kick_dist_col: 
         if not mask.any():
             return scores
 
+        dist_func = _dist_func_for_player(player_id)
         ball_accel_score = 100 / 3 * ball_accel_func(features.loc[mask, "ball_accel"].to_numpy())
-        player_dist_score = 100 / 3 * player_dist_func(features.loc[mask, "player_dist"].to_numpy())
+        player_dist_score = 100 / 3 * dist_func(features.loc[mask, "player_dist"].to_numpy())
         kick_dist_score = 100 / 3 * kick_dist_func(features.loc[mask, kick_dist_col].to_numpy())
         scores[mask.to_numpy()] = ball_accel_score + player_dist_score + kick_dist_score
         return scores
 
     elif features["player_id"] == player_id:  # isinstance(features, pd.Series)
+        dist_func = _dist_func_for_player(player_id)
         ball_accel_score = 100 / 3 * ball_accel_func(features["ball_accel"])
-        player_dist_score = 100 / 3 * player_dist_func(features["player_dist"])
+        player_dist_score = 100 / 3 * dist_func(features["player_dist"])
         kick_dist_score = 100 / 3 * kick_dist_func(features[kick_dist_col])
         return ball_accel_score + player_dist_score + kick_dist_score
 

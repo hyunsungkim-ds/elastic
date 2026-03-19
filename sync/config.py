@@ -34,6 +34,7 @@ SPADL_TYPES = [
     "keeper_sweeper",  # new, incoming
     "dispossessed",  # new, minor
     "control",  # new, incoming
+    "out",  # new, virtual OOP marker
 ]
 SPADL_BODYPARTS = ["foot", "head", "other", "head/other", "foot_left", "foot_right"]
 
@@ -46,10 +47,10 @@ INCOMING = INCOMING_GK + ["interception", "ball_recovery", "control"]
 MINOR = ["tackle", "take_on", "second_take_on", "foul", "bad_touch", "dispossessed"]
 
 TIME_KICKOFF = 5  # Stats Perform: 5, Sportec: 5 (seconds)
-TIME_PASS_LIKE_OPEN = 10  # Stats Perform: 5, Sportec: 10 (seconds)
+TIME_PASS_LIKE_OPEN = 5  # Stats Perform: 5, Sportec: 10 (seconds)
 TIME_SET_PIECE = 15  # Stats Perform: 15, Sportec: 15 (seconds)
-TIME_INCOMING = 10  # Stats Perform: 5, Sportec: 10 (seconds)
-TIME_MINOR = 10  # Stats Perform: 5, Sportec: 10 (seconds)
+TIME_INCOMING = 5  # Stats Perform: 5, Sportec: 10 (seconds)
+TIME_MINOR = 5  # Stats Perform: 5, Sportec: 10 (seconds)
 FRAME_DELAY_START = 0  # Stats Perform: 0, Sportec: -1 (seconds)
 
 # Additional event categories and parameters for ETSY

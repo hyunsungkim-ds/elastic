@@ -246,7 +246,7 @@ def _frame_status(pred_frames: pd.Series, true_frames: pd.Series) -> pd.Series:
 def collapse_events(events: pd.DataFrame, tracking: pd.DataFrame | None = None) -> pd.DataFrame:
     """Collapse NW event sequences into Greedy-style receive annotations.
 
-    Explicit ``control`` rows are folded into the previous pass-like event's
+    Explicit ``control``/``out`` rows are folded into the previous pass-like event's
     ``receive_*`` fields. In addition, direct receive markers that do not have
     a separate control row are also folded back:
     - incoming events (same semantics as ``ReceiveDetector._detect_receive``)
@@ -290,7 +290,7 @@ def collapse_events(events: pd.DataFrame, tracking: pd.DataFrame | None = None) 
         prev_event["receive_ts"] = current_row[time_col] if time_col is not None else np.nan
 
     for _, row in events.iterrows():
-        if row["spadl_type"] == "control":
+        if row["spadl_type"] in ["control", "out"]:
             if _can_assign_receive(restored[-1] if restored else None, row):
                 _assign_receive(restored[-1], row)
             continue
@@ -350,7 +350,9 @@ def calc_accuracy(
 
     synced = synced.copy()
     synced = synced[~synced["spadl_type"].isin(["take_on", "second_take_on"])].reset_index(drop=True)
-    synced = collapse_events(synced).reset_index(drop=True)
+    needs_collapse = ("receive_frame_id" not in synced.columns) or synced["spadl_type"].eq("control").any()
+    if needs_collapse:
+        synced = collapse_events(synced).reset_index(drop=True)
 
     corrected = corrected.copy()
     corrected = corrected[~corrected["spadl_type"].isin(["take_on", "second_take_on"])].reset_index(drop=True)
