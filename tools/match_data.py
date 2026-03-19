@@ -137,15 +137,15 @@ class MatchData(ABC):
         synced_cols = ["period_id", "timestamp", "player_id", "event_type"]
         synced_events = events.loc[events["timestamp"].notna(), synced_cols].copy().reset_index(drop=True)
         synced_events["timestamp"] = synced_events["timestamp"].apply(timestamp_to_seconds).round(3)
+        merged = pd.merge(tracking, synced_events, how="left")
 
         annot_cols = ["period_id", "utc_timestamp", "annot_x", "annot_y"]
-        annot_events = events[annot_cols].copy()
-        annot_events = MatchData.calculate_event_seconds(annot_events)
-        annot_events["timestamp"] = ((annot_events["timestamp"] * fps).round().astype(int) / fps).round(2)
-        annot_events.drop("utc_timestamp", axis=1, inplace=True)
-
-        merged = pd.merge(tracking, synced_events, how="left")
-        merged = pd.merge(merged, annot_events, how="left")
+        if set(annot_cols).issubset(events.columns):
+            annot_events = events[annot_cols].copy()
+            annot_events = MatchData.calculate_event_seconds(annot_events)
+            annot_events["timestamp"] = ((annot_events["timestamp"] * fps).round().astype(int) / fps).round(2)
+            annot_events.drop("utc_timestamp", axis=1, inplace=True)
+            merged = pd.merge(merged, annot_events, how="left")
 
         event_mask = merged["player_id"].notna()
         merged.loc[event_mask, "event_x"] = merged.loc[event_mask, "ball_x"]
@@ -153,6 +153,7 @@ class MatchData(ABC):
 
         if ffill:
             ffill_cols = ["player_id", "event_type", "event_x", "event_y", "annot_x", "annot_y"]
+            ffill_cols = [col for col in ffill_cols if col in merged.columns]
             merged[ffill_cols] = merged[ffill_cols].ffill()
 
         return merged
