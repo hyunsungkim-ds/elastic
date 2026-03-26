@@ -330,7 +330,100 @@ def collapse_events(events: pd.DataFrame, tracking: pd.DataFrame | None = None) 
     return restored_events.reset_index(drop=True)
 
 
-def calc_accuracy(
+def _nearest_cand_diff(frame_ids: pd.Series, cand_frame_ids: np.ndarray) -> np.ndarray:
+    out = np.full(len(frame_ids), np.nan)
+    if len(cand_frame_ids) == 0:
+        return out
+    valid_mask = frame_ids.notna().to_numpy()
+    if valid_mask.any():
+        vals = frame_ids[valid_mask].to_numpy(dtype=np.float64)
+        idx = np.searchsorted(cand_frame_ids, vals)
+        diff_right = np.abs(cand_frame_ids[np.clip(idx, 0, len(cand_frame_ids) - 1)] - vals)
+        diff_left = np.abs(cand_frame_ids[np.clip(idx - 1, 0, len(cand_frame_ids) - 1)] - vals)
+        out[valid_mask] = np.minimum(diff_left, diff_right)
+    return out
+
+
+def _coverage_at_thresholds(diffs: np.ndarray, thresholds: list[int]) -> pd.Series:
+    valid = diffs[~np.isnan(diffs)]
+    if len(valid) == 0:
+        return pd.Series({t: np.nan for t in thresholds}, dtype=float)
+    return pd.Series({t: float((valid <= t).mean()) for t in thresholds}, dtype=float)
+
+
+def calculate_candidate_coverage(
+    cand_frames: pd.DataFrame,
+    true_events: pd.DataFrame,
+    buffers: int | list[int] | np.ndarray = [0, 2, 5, 10],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Check whether candidate frames cover true event frames.
+
+    For each true event, computes the frame difference to the nearest candidate
+    frame. Returns per-event differences and coverage rates broken down by event
+    category and buffer threshold.
+
+    Parameters
+    ----------
+    cand_frames:
+        Output of ``ELASTIC_NW.find_candidate_frames``; must contain a
+        ``frame_id`` column.
+    true_events:
+        Ground-truth events; must contain ``frame_id`` and ``spadl_type``
+        columns. ``receive_frame_id`` is used for receive coverage when present.
+    buffers:
+        Tolerance in frames, given as a single integer or a list/array of
+        integers. Events whose nearest candidate frame is within a threshold
+        are considered "covered" at that threshold. Buffer 0 (exact match) is
+        always included in the result regardless of the input.
+
+    Returns
+    -------
+    coverage : pd.DataFrame
+        Coverage rate (0–1) for each event category (rows: ``pass_like``,
+        ``set_piece``, ``incoming``, ``minor``, ``receive``, ``overall``)
+        at each buffer threshold (columns). Buffer 0 is always present.
+        ``receive`` is computed from ``receive_frame_id`` for pass-like and
+        set-piece events.
+    diffs : pd.DataFrame
+        Per-event distance to the nearest candidate frame, indexed by
+        ``true_events.index``, with columns ``frame_id`` and
+        ``receive_frame_id``.
+    """
+    cand_frame_ids = np.sort(cand_frames["frame_id"].dropna().unique().astype(np.float64))
+    thresholds = sorted(set([0] + list(np.asarray(buffers).reshape(-1).tolist())))
+
+    frame_diffs = _nearest_cand_diff(pd.to_numeric(true_events["frame_id"], errors="coerce"), cand_frame_ids)
+    receive_diffs = (
+        _nearest_cand_diff(pd.to_numeric(true_events["receive_frame_id"], errors="coerce"), cand_frame_ids)
+        if "receive_frame_id" in true_events.columns
+        else np.full(len(true_events), np.nan)
+    )
+    diffs = pd.DataFrame({"frame_diff": frame_diffs, "receive_frame_diff": receive_diffs}, index=true_events.index)
+
+    category_map = (
+        {x: "pass_like" for x in config.PASS_LIKE_OPEN}
+        | {x: "set_piece" for x in config.SET_PIECE}
+        | {x: "incoming" for x in config.INCOMING}
+        | {x: "minor" for x in config.MINOR}
+    )
+    event_cat = true_events["spadl_type"].map(category_map)
+
+    coverage_rows = {}
+    for cat in ["pass_like", "set_piece", "incoming", "minor"]:
+        mask = (event_cat == cat).to_numpy()
+        coverage_rows[cat] = _coverage_at_thresholds(frame_diffs[mask], thresholds)
+
+    receive_mask = event_cat.isin({"pass_like", "set_piece"}).to_numpy()
+    coverage_rows["receive"] = _coverage_at_thresholds(receive_diffs[receive_mask], thresholds)
+    coverage_rows["overall"] = _coverage_at_thresholds(frame_diffs, thresholds)
+
+    col_names = {t: "exact" if t == 0 else f"within_{t}" for t in thresholds}
+    coverage = pd.DataFrame(coverage_rows).T.rename(columns=col_names)
+
+    return coverage, diffs
+
+
+def calculate_accuracy(
     synced: pd.DataFrame,
     corrected: pd.DataFrame,
     include_receive: bool = True,
