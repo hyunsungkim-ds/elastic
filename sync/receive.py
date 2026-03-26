@@ -79,7 +79,7 @@ class ReceiveDetector:
                 next_player_last_dist = features["next_player_dist"].at[frame]
                 cand_features.at[frame, "kick_dist"] = next_player_max_dist - next_player_last_dist
 
-            cand_features["score"] = utils.score_frames_receive(cand_features)
+            cand_features["score"] = utils.greedy_score_receive(cand_features)
             return cand_features["score"].idxmax(), cand_features
 
     def _detect_receive(self, event_idx: int, s: float = 10) -> Tuple[float, str, pd.DataFrame, pd.DataFrame]:

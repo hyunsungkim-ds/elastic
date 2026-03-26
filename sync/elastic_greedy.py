@@ -305,7 +305,7 @@ class ELASTIC_Greedy:
                 next_frame = cand_features.index[i + 1] if i < len(cand_features) - 1 else features.index[-1]
                 cand_features.at[frame, "kick_dist"] = features["player_dist"].loc[frame:next_frame].max()
 
-            cand_features["score"] = utils.score_frames_major(cand_features)
+            cand_features["score"] = utils.greedy_score_major(cand_features)
             return cand_features["score"].idxmax(), features, cand_features
 
     @staticmethod
@@ -362,7 +362,7 @@ class ELASTIC_Greedy:
                     kick_dist = features["player_dist"].loc[prev_frame:frame].max()
                 cand_features.at[frame, "kick_dist"] = kick_dist
 
-            cand_features["score"] = utils.score_frames_major(cand_features)
+            cand_features["score"] = utils.greedy_score_major(cand_features)
             return cand_features["score"].idxmax(), features, cand_features
 
     @staticmethod
@@ -418,7 +418,7 @@ class ELASTIC_Greedy:
                 post_oppo_dist = features["oppo_dist"].loc[frame:next_frame].max()
                 cand_features.at[frame, "kick_dist"] = max(post_player_dist, post_oppo_dist)
 
-            cand_features["score"] = utils.score_frames_tackle(cand_features)
+            cand_features["score"] = utils.greedy_score_tackle(cand_features)
             return cand_features["score"].idxmax(), features, cand_features
 
     @staticmethod
@@ -479,7 +479,7 @@ class ELASTIC_Greedy:
                     cand_features.at[frame, "angle_change"] = 0
 
             cand_features["delta_speed"] = cand_features["max_speed"] - cand_features["player_speed"]
-            cand_features["score"] = utils.score_frames_take_on(cand_features)
+            cand_features["score"] = utils.greedy_score_takeon(cand_features)
             return cand_features["score"].idxmax(), features, cand_features
 
     @staticmethod
@@ -522,7 +522,7 @@ class ELASTIC_Greedy:
                 next_frame = cand_features.index[i + 1] if i < len(cand_features) - 1 else frame + 2 * fps
                 cand_features.at[frame, "kick_dist"] = features["player_dist"].loc[frame:next_frame].max()
 
-            cand_features["score"] = utils.score_frames_dispossessed(cand_features)
+            cand_features["score"] = utils.greedy_score_dispossessed(cand_features)
             return cand_features["score"].idxmax(), features, cand_features
 
     @staticmethod

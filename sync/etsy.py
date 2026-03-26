@@ -258,7 +258,7 @@ class ETSY:
         elif len(cand_features.index) == 1:
             return cand_features.index[0], features, None
         else:
-            cand_features["score"] = utils.score_frames_etsy(cand_features)
+            cand_features["score"] = utils.etsy_score(cand_features)
             return cand_features["score"].idxmax(), features, cand_features
 
     def _sync_period_events(self, period: int) -> None:

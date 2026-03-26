@@ -581,13 +581,13 @@ class ELASTIC_NW:
             event_type = ep_events.at[event_idx, "spadl_type"]
             if event_type == "tackle":
                 kick_dist_col = "pre_kick_dist"
-                score_fn = utils.score_nw_duel
+                score_fn = utils.nw_score_minor
             elif event_type == "dispossessed":
                 kick_dist_col = "post_kick_dist"
-                score_fn = utils.score_nw_duel
+                score_fn = utils.nw_score_minor
             else:
                 kick_dist_col = "pre_kick_dist" if event_type in config.INCOMING else "post_kick_dist"
-                score_fn = utils.score_nw
+                score_fn = utils.nw_score_major
             player_frames = ep_frames[ep_frames["player_id"] == event_player]
 
             player_scores = score_fn(player_frames, event_player, kick_dist_col)

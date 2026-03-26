@@ -48,7 +48,7 @@ def _dist_func_for_player(player_id: str) -> Callable:
     return out_dist_func if player_id.startswith(("out_", "goal_")) else player_dist_func
 
 
-def score_nw(features: pd.Series | pd.DataFrame, player_id: str, kick_dist_col: str) -> float | np.ndarray:
+def nw_score_major(features: pd.Series | pd.DataFrame, player_id: str, kick_dist_col: str) -> float | np.ndarray:
     if isinstance(features, pd.DataFrame):
         scores = np.zeros(len(features), dtype=float)
         if scores.size == 0:
@@ -76,7 +76,7 @@ def score_nw(features: pd.Series | pd.DataFrame, player_id: str, kick_dist_col: 
         return 0.0
 
 
-def score_nw_duel(features: pd.Series | pd.DataFrame, player_id: str, kick_dist_col: str) -> float | np.ndarray:
+def nw_score_minor(features: pd.Series | pd.DataFrame, player_id: str, kick_dist_col: str) -> float | np.ndarray:
     if isinstance(features, pd.DataFrame):
         scores = np.zeros(len(features), dtype=float)
         if scores.size == 0:
@@ -104,7 +104,7 @@ def score_nw_duel(features: pd.Series | pd.DataFrame, player_id: str, kick_dist_
         return 0.0
 
 
-def score_frames_major(features: pd.DataFrame) -> np.ndarray:
+def greedy_score_major(features: pd.DataFrame) -> np.ndarray:
     ball_accel_score = 25 * ball_accel_func(features["ball_accel"].values)
     player_dist_score = 25 * player_dist_func(features["player_dist"].values)
     kick_dist_score = 25 * kick_dist_func(features["kick_dist"].values)
@@ -112,7 +112,7 @@ def score_frames_major(features: pd.DataFrame) -> np.ndarray:
     return ball_accel_score + player_dist_score + kick_dist_score + frame_delay_score
 
 
-def score_frames_tackle(features: pd.DataFrame) -> np.ndarray:
+def greedy_score_tackle(features: pd.DataFrame) -> np.ndarray:
     ball_accel_score = 20 * ball_accel_func(features["ball_accel"].values)
     player_dist_score = 20 * player_dist_func(features["player_dist"].values)
     oppo_dist_score = 20 * player_dist_func(features["oppo_dist"].values)
@@ -121,7 +121,7 @@ def score_frames_tackle(features: pd.DataFrame) -> np.ndarray:
     return ball_accel_score + player_dist_score + oppo_dist_score + kick_dist_score + frame_delay_score
 
 
-def score_frames_take_on(features: pd.DataFrame) -> np.ndarray:
+def greedy_score_takeon(features: pd.DataFrame) -> np.ndarray:
     ball_accel_score = 20 * ball_accel_func(features["ball_accel"].values * 2)
     max_speed_score = 20 * player_speed_func(features["max_speed"].values)
     delta_speed_score = 20 * player_speed_func(features["delta_speed"].values * 2)
@@ -130,14 +130,14 @@ def score_frames_take_on(features: pd.DataFrame) -> np.ndarray:
     return ball_accel_score + max_speed_score + delta_speed_score + oppo_dist_score + angle_change_score
 
 
-def score_frames_dispossessed(features: pd.DataFrame) -> np.ndarray:
+def greedy_score_dispossessed(features: pd.DataFrame) -> np.ndarray:
     ball_accel_score = 100 / 3 * ball_accel_func(features["ball_accel"].values)
     player_dist_score = 100 / 3 * player_dist_func(features["player_dist"].values)
     kick_dist_score = 100 / 3 * kick_dist_func(features["kick_dist"].values)
     return ball_accel_score + player_dist_score + kick_dist_score
 
 
-def score_frames_receive(features: pd.DataFrame) -> np.ndarray:
+def greedy_score_receive(features: pd.DataFrame) -> np.ndarray:
     ball_accel_score = 25 * ball_accel_func(features["ball_accel"].values)
     closest_dist_score = 25 * player_dist_func(features["closest_dist"].values)
     next_player_dist_score = 25 * player_dist_func(features["next_player_dist"].values)
@@ -150,7 +150,7 @@ max_dist = np.sqrt(PITCH_X**2 + PITCH_Y**2)
 etsy_dist_func = linear_scoring_func(0, max_dist, increasing=False)
 
 
-def score_frames_etsy(features: pd.DataFrame) -> np.ndarray:
+def etsy_score(features: pd.DataFrame) -> np.ndarray:
     player_ball_dist_score = 100 / 3 * etsy_dist_func(features["player_ball_dist"].values)
     player_event_dist_score = 100 / 3 * etsy_dist_func(features["player_event_dist"].values)
     ball_event_dist_score = 100 / 3 * etsy_dist_func(features["ball_event_dist"].values)
