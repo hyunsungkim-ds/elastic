@@ -38,17 +38,21 @@ player_dist_func = linear_scoring_func(1, 3, increasing=False)
 out_dist_func = linear_scoring_func(0, 1, increasing=False)
 player_speed_func = linear_scoring_func(0, 5, increasing=True)
 player_accel_func = linear_scoring_func(0, 5, increasing=True)
-ball_accel_func = linear_scoring_func(0, 20, increasing=True)
+ball_accel_func = linear_scoring_func(0, 30, increasing=True)
 kick_dist_func = linear_scoring_func(0, 5, increasing=True)
-angle_change_func = linear_scoring_func(-1, 1, increasing=False)  # increasing from 0 to pi in radian
+angle_change_func = linear_scoring_func(0, 1, increasing=False)  # increasing from 0 to pi in radian
 frame_delay_func = linear_scoring_func(0, 125, increasing=False)
+incoming_pre_slope_func = linear_scoring_func(-0.3, 0, increasing=False)
+incoming_post_slope_func = linear_scoring_func(-0.2, 0, increasing=True)
+outgoing_pre_slope_func = linear_scoring_func(0, 0.2, increasing=False)
+outgoing_post_slope_func = linear_scoring_func(0, 0.3, increasing=True)
 
 
-def _dist_func_for_player(player_id: str) -> Callable:
-    return out_dist_func if player_id.startswith(("out_", "goal_")) else player_dist_func
+def nw_score_major(features: pd.Series | pd.DataFrame, player_id: str, incoming: bool = False) -> float | np.ndarray:
+    dist_func = out_dist_func if player_id.startswith(("out_", "goal_")) else player_dist_func
+    pre_slope_func = incoming_pre_slope_func if incoming else outgoing_pre_slope_func
+    post_slope_func = incoming_post_slope_func if incoming else outgoing_post_slope_func
 
-
-def nw_score_major(features: pd.Series | pd.DataFrame, player_id: str, kick_dist_col: str) -> float | np.ndarray:
     if isinstance(features, pd.DataFrame):
         scores = np.zeros(len(features), dtype=float)
         if scores.size == 0:
@@ -58,25 +62,28 @@ def nw_score_major(features: pd.Series | pd.DataFrame, player_id: str, kick_dist
         if not mask.any():
             return scores
 
-        dist_func = _dist_func_for_player(player_id)
-        ball_accel_score = 100 / 3 * ball_accel_func(features.loc[mask, "ball_accel"].to_numpy())
-        player_dist_score = 100 / 3 * dist_func(features.loc[mask, "player_dist"].to_numpy())
-        kick_dist_score = 100 / 3 * kick_dist_func(features.loc[mask, kick_dist_col].to_numpy())
-        scores[mask.to_numpy()] = ball_accel_score + player_dist_score + kick_dist_score
+        features = features.loc[mask]
+        player_dist_score = 40 * dist_func(features["player_dist"].to_numpy())
+        ball_accel_score = 20 * ball_accel_func(features["ball_accel"].to_numpy())
+        pre_slope_score = 20 * pre_slope_func(features["pre_slope"].to_numpy())
+        post_slope_score = 20 * post_slope_func(features["post_slope"].to_numpy())
+        scores[mask.to_numpy()] = player_dist_score + ball_accel_score + pre_slope_score + post_slope_score
         return scores
 
     elif features["player_id"] == player_id:  # isinstance(features, pd.Series)
-        dist_func = _dist_func_for_player(player_id)
-        ball_accel_score = 100 / 3 * ball_accel_func(features["ball_accel"])
-        player_dist_score = 100 / 3 * dist_func(features["player_dist"])
-        kick_dist_score = 100 / 3 * kick_dist_func(features[kick_dist_col])
-        return ball_accel_score + player_dist_score + kick_dist_score
+        player_dist_score = 40 * dist_func(features["player_dist"])
+        ball_accel_score = 20 * ball_accel_func(features["ball_accel"])
+        pre_slope_score = 20 * pre_slope_func(features["pre_slope"])
+        post_slope_score = 20 * post_slope_func(features["post_slope"])
+        return player_dist_score + ball_accel_score + pre_slope_score + post_slope_score
 
     else:
         return 0.0
 
 
-def nw_score_minor(features: pd.Series | pd.DataFrame, player_id: str, kick_dist_col: str) -> float | np.ndarray:
+def nw_score_minor(features: pd.Series | pd.DataFrame, player_id: str, incoming: bool = False) -> float | np.ndarray:
+    kick_dist_col = "pre_kick_dist" if incoming else "post_kick_dist"
+
     if isinstance(features, pd.DataFrame):
         scores = np.zeros(len(features), dtype=float)
         if scores.size == 0:
@@ -86,10 +93,11 @@ def nw_score_minor(features: pd.Series | pd.DataFrame, player_id: str, kick_dist
         if not mask.any():
             return scores
 
-        ball_accel_score = 25 * ball_accel_func(features.loc[mask, "ball_accel"].to_numpy())
-        player_dist_score = 25 * player_dist_func(features.loc[mask, "player_dist"].to_numpy())
-        oppo_dist_score = 25 * player_dist_func(features.loc[mask, "oppo_dist"].to_numpy())
-        kick_dist_score = 25 * kick_dist_func(features.loc[mask, kick_dist_col].to_numpy())
+        features = features.loc[mask]
+        ball_accel_score = 25 * ball_accel_func(features["ball_accel"].to_numpy())
+        player_dist_score = 25 * player_dist_func(features["player_dist"].to_numpy())
+        oppo_dist_score = 25 * player_dist_func(features["oppo_dist"].to_numpy())
+        kick_dist_score = 25 * kick_dist_func(features[kick_dist_col].to_numpy())
         scores[mask.to_numpy()] = ball_accel_score + player_dist_score + oppo_dist_score + kick_dist_score
         return scores
 
@@ -102,6 +110,23 @@ def nw_score_minor(features: pd.Series | pd.DataFrame, player_id: str, kick_dist
 
     else:
         return 0.0
+
+
+def nw_score_takeon(features: pd.DataFrame, player_id: str, incoming: bool = False) -> np.ndarray:
+    scores = np.zeros(len(features), dtype=float)
+    mask = features["player_id"] == player_id
+    if not mask.any():
+        return scores
+
+    f = features.loc[mask]
+    scores[mask.to_numpy()] = (
+        20 * ball_accel_func(f["ball_accel"].to_numpy() * 2)
+        + 20 * player_speed_func(f["max_speed"].fillna(0).to_numpy())
+        # + 20 * player_speed_func(f["delta_speed"].fillna(0).to_numpy() * 2)
+        + 20 * player_dist_func(f["oppo_dist"].fillna(10).to_numpy() - 3)
+        + 40 * angle_change_func(f["angle_change"].fillna(0).to_numpy())
+    )
+    return scores
 
 
 def greedy_score_major(features: pd.DataFrame) -> np.ndarray:

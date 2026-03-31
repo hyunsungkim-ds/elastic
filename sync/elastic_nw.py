@@ -180,7 +180,7 @@ class ELASTIC_NW:
 
         return events
 
-    def find_candidate_frames(self, period: int = None) -> pd.DataFrame:
+    def find_candidate_frames(self, period: int = None, slope_window: int = 10) -> pd.DataFrame:
         """Find candidate frames for alignment based on physical constraints.
 
         A frame is a candidate if:
@@ -214,6 +214,8 @@ class ELASTIC_NW:
             "player_dist",
             "ball_height",
             "ball_accel",
+            "pre_slope",
+            "post_slope",
             "oppo_id",
             "oppo_dist",
         ]
@@ -245,7 +247,7 @@ class ELASTIC_NW:
                 continue
 
             ball_accels = ball_data["accel_v"].to_numpy()
-            accel_peaks = find_peaks(ball_accels, prominence=10, distance=10)[0]
+            accel_peaks = find_peaks(ball_accels, distance=3, prominence=10)[0]
             accel_peak_frames = ball_data.index[accel_peaks] if accel_peaks.size > 0 else []
 
             ball_features = ball_data[["x", "y", "z", "accel_v"]].copy()
@@ -269,10 +271,10 @@ class ELASTIC_NW:
 
                 # Detect player_dist valleys
                 dist_arr = features["player_dist"].to_numpy()
-                dist_valleys = find_peaks(-dist_arr, prominence=1)[0]
+                dist_valleys = find_peaks(-dist_arr, height=-3, distance=3, prominence=0.5)[0]
                 cand_idx = set(dist_valleys.tolist())
 
-                # Add ball accel peaks (full episode) not already covered within ±3 frames
+                # Add ball accel peaks not already covered within ±3 frames
                 accel_pos = features.index.get_indexer(accel_peak_frames)
                 accel_pos = accel_pos[accel_pos >= 0]
                 for i in accel_pos:
@@ -303,6 +305,17 @@ class ELASTIC_NW:
                     player_cands.at[idx, "player_dist"] = window["player_dist"].min()
                     player_cands.at[idx, "ball_height"] = window["ball_height"].min()
                     player_cands.at[idx, "ball_accel"] = window["ball_accel"].max()
+
+                # Calculate pre/post slope using vectorized lookup
+                dist_series = features["player_dist"]
+                cand_frames_arr = player_cands.index.to_numpy()
+                pre_pos = np.searchsorted(dist_series.index, cand_frames_arr - slope_window)
+                post_pos = np.searchsorted(dist_series.index, cand_frames_arr + slope_window, side="right") - 1
+                pre_dist = dist_series.iloc[np.clip(pre_pos, 0, len(dist_series) - 1)].to_numpy()
+                post_dist = dist_series.iloc[np.clip(post_pos, 0, len(dist_series) - 1)].to_numpy()
+                cur_dist = dist_series.loc[cand_frames_arr].to_numpy()
+                player_cands["pre_slope"] = (cur_dist - pre_dist) / slope_window
+                player_cands["post_slope"] = (post_dist - cur_dist) / slope_window
 
                 if is_out:
                     valid_mask = player_cands["player_dist"] < 1
@@ -568,18 +581,29 @@ class ELASTIC_NW:
         if episode_events.empty or episode_events["spadl_type"].iloc[-1] != "foul":
             return aligned
 
-        foul_event: pd.Series = episode_events.iloc[-1].copy()
+        # Collect trailing consecutive foul events
+        foul_indices = []
+        for i in range(len(episode_events) - 1, -1, -1):
+            if episode_events["spadl_type"].iloc[i] == "foul":
+                foul_indices.append(i)
+            else:
+                break
+        foul_indices.reverse()
+
+        last_foul_event = episode_events.iloc[foul_indices[-1]].copy()
         last_aligned_frame = aligned_frames.iloc[-1]
 
-        player_cands = ep_frames[ep_frames["player_id"] == foul_event["player_id"]]
+        player_cands = ep_frames[ep_frames["player_id"] == last_foul_event["player_id"]]
         if not player_cands.empty:
             last_cand = player_cands.sort_values("frame_id").iloc[-1]
             last_cand_frame = last_cand["frame_id"]
             if pd.notna(last_cand_frame) and last_cand_frame >= last_aligned_frame:
-                foul_event["frame_id"] = last_cand_frame
-                foul_event["timestamp"] = self.frames.at[last_cand_frame, "timestamp"]
-                foul_event["score"] = np.nan
-                aligned.loc[foul_event.name] = foul_event[config.ALIGNED_COLS]
+                for fi in foul_indices:
+                    foul_event = episode_events.iloc[fi].copy()
+                    foul_event["frame_id"] = last_cand_frame
+                    foul_event["timestamp"] = self.frames.at[last_cand_frame, "timestamp"]
+                    foul_event["score"] = np.nan
+                    aligned.loc[foul_event.name] = foul_event[config.ALIGNED_COLS]
                 return aligned
 
         return aligned
@@ -657,21 +681,18 @@ class ELASTIC_NW:
         for i, event_idx in enumerate(ep_events.index):
             event_player = ep_events.at[event_idx, "player_id"]
             event_type = ep_events.at[event_idx, "spadl_type"]
+            is_incoming = event_type in config.INCOMING + ["tackle"]
             if event_type == "tackle":
-                kick_dist_col = "pre_kick_dist"
                 score_fn = utils.nw_score_minor
             elif event_type == "dispossessed":
-                kick_dist_col = "post_kick_dist"
                 score_fn = utils.nw_score_minor
             elif event_type == "take_on":
-                kick_dist_col = "post_kick_dist"
                 score_fn = utils.nw_score_takeon
             else:
-                kick_dist_col = "pre_kick_dist" if event_type in config.INCOMING else "post_kick_dist"
                 score_fn = utils.nw_score_major
             player_frames = ep_frames[ep_frames["player_id"] == event_player]
 
-            player_scores = score_fn(player_frames, event_player, kick_dist_col)
+            player_scores = score_fn(player_frames, event_player, incoming=is_incoming)
             player_scores = pd.Series(player_scores, index=player_frames["frame_id"]).groupby(level=0).max()
 
             frame_pos = [frame_pos_map[frame_id] for frame_id in player_scores.index]
