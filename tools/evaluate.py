@@ -261,8 +261,8 @@ def collapse_events(events: pd.DataFrame, tracking: pd.DataFrame | None = None) 
     time_col = "timestamp" if "timestamp" in events.columns else "synced_ts" if "synced_ts" in events.columns else None
     pass_like_types = set(config.PASS_LIKE_OPEN + config.SET_PIECE)
     direct_receive_types = set(config.INCOMING + ["shot_block", "keeper_punch", "bad_touch", "tackle"])
-    one_touch_types = {"pass", "cross", "shot", "clearance", "dispossessed"}
-    restored = []
+    one_touch_types = {"pass", "cross", "shot", "clearance", "take_on", "dispossessed"}
+    collapsed_rows = []
 
     def _same_episode(prev_event: dict, current_row: pd.Series) -> bool:
         if "episode_id" in current_row.index and "episode_id" in prev_event:
@@ -291,20 +291,20 @@ def collapse_events(events: pd.DataFrame, tracking: pd.DataFrame | None = None) 
 
     for _, row in events.iterrows():
         if row["spadl_type"] in ["control", "out"]:
-            if _can_assign_receive(restored[-1] if restored else None, row):
-                _assign_receive(restored[-1], row)
+            if _can_assign_receive(collapsed_rows[-1] if collapsed_rows else None, row):
+                _assign_receive(collapsed_rows[-1], row)
             continue
 
-        if _can_assign_receive(restored[-1] if restored else None, row):
+        if _can_assign_receive(collapsed_rows[-1] if collapsed_rows else None, row):
             if row["spadl_type"] in direct_receive_types:
-                _assign_receive(restored[-1], row)
-            elif row["spadl_type"] in one_touch_types and restored[-1]["player_id"] != row["player_id"]:
+                _assign_receive(collapsed_rows[-1], row)
+            elif row["spadl_type"] in one_touch_types and collapsed_rows[-1]["player_id"] != row["player_id"]:
                 # NW can drop a control row when reception and next action align
                 # to the same frame. In that case, the action frame is the
                 # previous pass-like event's receive frame.
-                _assign_receive(restored[-1], row)
+                _assign_receive(collapsed_rows[-1], row)
 
-        restored.append(
+        collapsed_rows.append(
             {
                 "period_id": row["period_id"],
                 "episode_id": row["episode_id"] if "episode_id" in row.index else np.nan,
@@ -320,14 +320,14 @@ def collapse_events(events: pd.DataFrame, tracking: pd.DataFrame | None = None) 
             }
         )
 
-    restored_events = pd.DataFrame(restored)
+    collapsed = pd.DataFrame(collapsed_rows)
 
-    if tracking is not None and not restored_events.empty:
+    if tracking is not None and not collapsed.empty:
         ball_tracking = tracking[tracking["ball"]].drop_duplicates("frame_id").set_index("frame_id")
-        restored_events["start_x"] = restored_events["frame_id"].map(ball_tracking["x"])
-        restored_events["start_y"] = restored_events["frame_id"].map(ball_tracking["y"])
+        collapsed["start_x"] = collapsed["frame_id"].map(ball_tracking["x"])
+        collapsed["start_y"] = collapsed["frame_id"].map(ball_tracking["y"])
 
-    return restored_events.reset_index(drop=True)
+    return collapsed.reset_index(drop=True)
 
 
 def _nearest_cand_diff(frame_ids: pd.Series, cand_frame_ids: np.ndarray) -> np.ndarray:
@@ -425,7 +425,7 @@ def calculate_candidate_coverage(
 
 def calculate_accuracy(
     synced: pd.DataFrame,
-    corrected: pd.DataFrame,
+    annotated: pd.DataFrame,
     include_receive: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Compute frame accuracy after collapsing control events.
@@ -442,53 +442,52 @@ def calculate_accuracy(
     category_order = ["pass_like", "set_piece", "incoming", "minor"]
 
     synced = synced.copy()
-    synced = synced[~synced["spadl_type"].isin(["take_on", "second_take_on"])].reset_index(drop=True)
-    needs_collapse = ("receive_frame_id" not in synced.columns) or synced["spadl_type"].eq("control").any()
-    if needs_collapse:
+    # synced = synced[~synced["spadl_type"].isin(["take_on", "second_take_on"])].copy().reset_index(drop=True)
+    if "receive_frame_id" not in synced.columns:
         synced = collapse_events(synced).reset_index(drop=True)
 
-    corrected = corrected.copy()
-    corrected = corrected[~corrected["spadl_type"].isin(["take_on", "second_take_on"])].reset_index(drop=True)
-    if "error_type" in corrected.columns:
-        corrected = corrected[corrected["error_type"] != "false_positive"].reset_index(drop=True)
-    corrected["event_cat"] = corrected["spadl_type"].map(category_map)
+    annotated = annotated.copy()
+    # annotated = annotated[~annotated["spadl_type"].isin(["take_on", "second_take_on"])].reset_index(drop=True)
+    if "error_type" in annotated.columns:
+        annotated = annotated[annotated["error_type"] != "false_positive"].reset_index(drop=True)
+    annotated["event_cat"] = annotated["spadl_type"].map(category_map)
 
     if "receive_frame_id" not in synced.columns:
         synced["receive_frame_id"] = np.nan
-    if include_receive and "receive_frame_id" not in corrected.columns:
+    if include_receive and "receive_frame_id" not in annotated.columns:
         raise ValueError("`corrected` must contain `receive_frame_id` when `include_receive=True`.")
 
-    restored_events = synced.copy()
-    restored_events["event_status"] = _frame_status(synced["frame_id"], corrected["frame_id"])
-    restored_events["receive_status"] = pd.NA
+    synced = synced.copy()
+    synced["event_status"] = _frame_status(synced["frame_id"], annotated["frame_id"])
+    synced["receive_status"] = pd.NA
     if include_receive:
-        receive_mask = corrected["event_cat"].isin(["pass_like", "set_piece"])
-        restored_events.loc[receive_mask, "receive_status"] = _frame_status(
+        receive_mask = annotated["event_cat"].isin(["pass_like", "set_piece"])
+        synced.loc[receive_mask, "receive_status"] = _frame_status(
             synced.loc[receive_mask, "receive_frame_id"],
-            corrected.loc[receive_mask, "receive_frame_id"],
+            annotated.loc[receive_mask, "receive_frame_id"],
         ).to_numpy()
 
     acc_counts = {}
     for cat in category_order:
-        mask = corrected["event_cat"] == cat
-        acc_counts[cat] = _frame_metrics(synced.loc[mask, "frame_id"], corrected.loc[mask, "frame_id"])
+        mask = annotated["event_cat"] == cat
+        acc_counts[cat] = _frame_metrics(synced.loc[mask, "frame_id"], annotated.loc[mask, "frame_id"])
 
     acc_counts = pd.DataFrame.from_dict(acc_counts, orient="index")
-    acc_counts.loc["event_start"] = _frame_metrics(synced["frame_id"], corrected["frame_id"])
+    acc_counts.loc["event_start"] = _frame_metrics(synced["frame_id"], annotated["frame_id"])
 
     if include_receive:
         acc_counts.loc["event_end"] = _frame_metrics(
             synced.loc[receive_mask, "receive_frame_id"],
-            corrected.loc[receive_mask, "receive_frame_id"],
+            annotated.loc[receive_mask, "receive_frame_id"],
         )
 
         acc_counts.loc["total"] = acc_counts.loc["event_start"] + acc_counts.loc["event_end"]
         total_denom = acc_counts.at["total", "total"]
         if total_denom > 0:
-            start_sum = _sum_abs_diff(synced["frame_id"], corrected["frame_id"])
+            start_sum = _sum_abs_diff(synced["frame_id"], annotated["frame_id"])
             end_sum = _sum_abs_diff(
                 synced.loc[receive_mask, "receive_frame_id"],
-                corrected.loc[receive_mask, "receive_frame_id"],
+                annotated.loc[receive_mask, "receive_frame_id"],
             )
             acc_counts.at["total", "mean_diff"] = (start_sum + end_sum) / total_denom
         else:
@@ -500,4 +499,4 @@ def calculate_accuracy(
     acc_counts[int_cols] = acc_counts[int_cols].fillna(0).astype(int)
     acc_rates = acc_counts.drop(["total", "mean_diff"], axis=1).div(acc_counts["total"].replace(0, np.nan), axis=0)
 
-    return acc_counts, acc_rates, restored_events
+    return acc_counts, acc_rates, synced
