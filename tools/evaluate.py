@@ -206,20 +206,17 @@ def align_with_corrected_events(
     return alignment_df.reset_index(drop=True)
 
 
-def _frame_metrics(pred_frames: pd.Series, true_frames: pd.Series) -> dict[str, float]:
+def _frame_metrics(pred_frames: pd.Series, true_frames: pd.Series, thresholds: list[int]) -> dict[str, float]:
     pred = pd.to_numeric(pd.Series(pred_frames).reset_index(drop=True), errors="coerce")
     true = pd.to_numeric(pd.Series(true_frames).reset_index(drop=True), errors="coerce")
     diff = (pred - true).abs()
 
-    return {
-        "total": int(len(true)),
-        "mean_diff": diff.mean(),
-        "exact": int((pred == true).sum()),
-        "within_5": int((diff <= 5).sum()),
-        "within_25": int((diff <= 25).sum()),
-        "within_50": int((diff <= 50).sum()),
-        "valid": int(pred.notna().sum()),
-    }
+    result: dict[str, float] = {"total": int(len(true)), "mean_diff": diff.mean()}
+    for t in thresholds:
+        col = "exact" if t == 0 else f"within_{t}"
+        result[col] = int((diff <= t).sum())
+    result["valid"] = int(pred.notna().sum())
+    return result
 
 
 def _sum_abs_diff(pred_frames: pd.Series, true_frames: pd.Series) -> float:
@@ -228,18 +225,24 @@ def _sum_abs_diff(pred_frames: pd.Series, true_frames: pd.Series) -> float:
     return float((pred - true).abs().sum())
 
 
-def _frame_status(pred_frames: pd.Series, true_frames: pd.Series) -> pd.Series:
+def _sync_status(
+    pred_frames: pd.Series,
+    true_frames: pd.Series,
+    buffers: int | list[int] | np.ndarray = [0, 2, 5, 25, 50],
+) -> pd.Series:
     pred = pd.to_numeric(pd.Series(pred_frames).reset_index(drop=True), errors="coerce")
     true = pd.to_numeric(pd.Series(true_frames).reset_index(drop=True), errors="coerce")
     diff = (pred - true).abs()
 
+    buffers = sorted(set([0] + list(np.asarray(buffers).reshape(-1).tolist())), reverse=True)
+
     status = pd.Series("miss", index=pred.index, dtype="object")
     status[true.isna()] = pd.NA
-    status[(true.notna()) & (diff <= 50)] = "within_50"
-    status[(true.notna()) & (diff <= 25)] = "within_25"
-    status[(true.notna()) & (diff <= 5)] = "within_5"
-    status[(true.notna()) & (pred == true)] = "exact"
+    for t in buffers:
+        label = "exact" if t == 0 else f"within_{t}"
+        status[(true.notna()) & (diff <= t)] = label
     status[(true.notna()) & pred.isna()] = "miss"
+
     return status
 
 
@@ -379,15 +382,10 @@ def calculate_candidate_coverage(
     Returns
     -------
     coverage : pd.DataFrame
-        Coverage rate (0–1) for each event category (rows: ``pass_like``,
-        ``set_piece``, ``incoming``, ``minor``, ``receive``, ``overall``)
-        at each buffer threshold (columns). Buffer 0 is always present.
-        ``receive`` is computed from ``receive_frame_id`` for pass-like and
-        set-piece events.
+        Coverage rate (0–1) for each event category (rows) at each buffer threshold (columns).
     diffs : pd.DataFrame
         Per-event distance to the nearest candidate frame, indexed by
-        ``true_events.index``, with columns ``frame_id`` and
-        ``receive_frame_id``.
+        ``true_events.index``, with columns ``frame_id`` and ``receive_frame_id``.
     """
     cand_frame_ids = np.sort(cand_frames["frame_id"].dropna().unique().astype(np.float64))
     thresholds = sorted(set([0] + list(np.asarray(buffers).reshape(-1).tolist())))
@@ -427,6 +425,7 @@ def calculate_accuracy(
     synced: pd.DataFrame,
     annotated: pd.DataFrame,
     include_receive: bool = True,
+    buffers: int | list[int] | np.ndarray = [0, 2, 5, 25, 50],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Compute frame accuracy after collapsing control events.
 
@@ -457,12 +456,14 @@ def calculate_accuracy(
     if include_receive and "receive_frame_id" not in annotated.columns:
         raise ValueError("`corrected` must contain `receive_frame_id` when `include_receive=True`.")
 
+    buffers = sorted(set([0] + list(np.asarray(buffers).reshape(-1).tolist())))
+
     synced = synced.copy()
-    synced["event_status"] = _frame_status(synced["frame_id"], annotated["frame_id"])
+    synced["event_status"] = _sync_status(synced["frame_id"], annotated["frame_id"])
     synced["receive_status"] = pd.NA
     if include_receive:
         receive_mask = annotated["event_cat"].isin(["pass_like", "set_piece"])
-        synced.loc[receive_mask, "receive_status"] = _frame_status(
+        synced.loc[receive_mask, "receive_status"] = _sync_status(
             synced.loc[receive_mask, "receive_frame_id"],
             annotated.loc[receive_mask, "receive_frame_id"],
         ).to_numpy()
@@ -470,15 +471,16 @@ def calculate_accuracy(
     acc_counts = {}
     for cat in category_order:
         mask = annotated["event_cat"] == cat
-        acc_counts[cat] = _frame_metrics(synced.loc[mask, "frame_id"], annotated.loc[mask, "frame_id"])
+        acc_counts[cat] = _frame_metrics(synced.loc[mask, "frame_id"], annotated.loc[mask, "frame_id"], buffers)
 
     acc_counts = pd.DataFrame.from_dict(acc_counts, orient="index")
-    acc_counts.loc["event_start"] = _frame_metrics(synced["frame_id"], annotated["frame_id"])
+    acc_counts.loc["event_start"] = _frame_metrics(synced["frame_id"], annotated["frame_id"], buffers)
 
     if include_receive:
         acc_counts.loc["event_end"] = _frame_metrics(
             synced.loc[receive_mask, "receive_frame_id"],
             annotated.loc[receive_mask, "receive_frame_id"],
+            buffers,
         )
 
         acc_counts.loc["total"] = acc_counts.loc["event_start"] + acc_counts.loc["event_end"]
@@ -495,7 +497,7 @@ def calculate_accuracy(
     else:
         acc_counts.loc["total"] = acc_counts.loc["event_start"]
 
-    int_cols = ["total", "exact", "within_5", "within_25", "within_50", "valid"]
+    int_cols = ["total"] + ["exact" if t == 0 else f"within_{t}" for t in buffers] + ["valid"]
     acc_counts[int_cols] = acc_counts[int_cols].fillna(0).astype(int)
     acc_rates = acc_counts.drop(["total", "mean_diff"], axis=1).div(acc_counts["total"].replace(0, np.nan), axis=0)
 
