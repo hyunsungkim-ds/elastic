@@ -180,7 +180,7 @@ class ELASTIC_NW:
 
         return events
 
-    def find_candidate_frames(self, period: int = None, slope_window: int = 10) -> pd.DataFrame:
+    def find_candidate_frames(self, period: int = None, slope_window: int = 5) -> pd.DataFrame:
         """Find candidate frames for alignment based on physical constraints.
 
         A frame is a candidate if:
@@ -331,7 +331,7 @@ class ELASTIC_NW:
                 left_dist[1:] = frames_arr[1:] - frames_arr[:-1]
                 right_dist[:-1] = frames_arr[1:] - frames_arr[:-1]
                 min_neighbor_dist = np.minimum(left_dist, right_dist)
-                player_cands = player_cands[~(flat_mask.to_numpy() & (min_neighbor_dist <= 10))]
+                player_cands = player_cands[~(flat_mask.to_numpy() & (min_neighbor_dist <= 20))]
 
                 return player_cands.reset_index()
 
@@ -391,6 +391,14 @@ class ELASTIC_NW:
                         )
                         episode_cands = pd.concat([first_row, episode_cands], ignore_index=True)
 
+            # Merge consecutive frames into their group mean
+            unique_frames = np.sort(episode_cands["frame_id"].unique()).astype(int)
+            gaps = np.diff(unique_frames, prepend=unique_frames[0] - 2) > 1
+            group_ids = np.cumsum(gaps)
+            group_means = pd.Series(unique_frames).groupby(group_ids).transform("mean")
+            frame_mapping = pd.Series(np.round(group_means.values).astype(int), index=unique_frames)
+            episode_cands["frame_id"] = episode_cands["frame_id"].map(frame_mapping)
+
             episode_cands = self.calculate_oppo_features(episode_cands, merged_data=merged)
             episode_cands["timestamp"] = episode_cands["frame_id"].map(frames["timestamp"])
             cand_frames.append(episode_cands[output_cols])
@@ -442,8 +450,8 @@ class ELASTIC_NW:
             frames = group_sorted["frame_id"].values
 
             for i, frame in enumerate(frames):
-                prev_frame = frames[i - 1] if i > 0 else episode_start
-                next_frame = frames[i + 1] if i < len(frames) - 1 else episode_end
+                prev_frame = max(frames[i - 1] if i > 0 else episode_start, frame - 50)
+                next_frame = min(frames[i + 1] if i < len(frames) - 1 else episode_end, frame + 50)
                 output.at[group_sorted.index[i], "pre_kick_dist"] = player_dists.loc[prev_frame:frame].max()
                 output.at[group_sorted.index[i], "post_kick_dist"] = player_dists.loc[frame:next_frame].max()
 
