@@ -321,7 +321,19 @@ class ELASTIC_NW:
                     valid_mask = player_cands["player_dist"] < 1
                 else:
                     valid_mask = (player_cands["player_dist"] < 3) & (player_cands["ball_height"] < 3.5)
-                return player_cands[valid_mask].reset_index()
+                player_cands = player_cands[valid_mask]
+
+                # Drop flat-slope candidates that have a neighbor within ±10 frames
+                flat_mask = (player_cands["post_slope"] - player_cands["pre_slope"]).abs() < 0.05
+                frames_arr = player_cands.index.to_numpy()
+                left_dist = np.full(len(frames_arr), np.inf)
+                right_dist = np.full(len(frames_arr), np.inf)
+                left_dist[1:] = frames_arr[1:] - frames_arr[:-1]
+                right_dist[:-1] = frames_arr[1:] - frames_arr[:-1]
+                min_neighbor_dist = np.minimum(left_dist, right_dist)
+                player_cands = player_cands[~(flat_mask.to_numpy() & (min_neighbor_dist <= 10))]
+
+                return player_cands.reset_index()
 
             for player_id, group in merged.groupby("player_id"):
                 features = group.set_index("frame_id")[["player_dist", "ball_height", "ball_accel"]].sort_index()
@@ -681,7 +693,7 @@ class ELASTIC_NW:
         for i, event_idx in enumerate(ep_events.index):
             event_player = ep_events.at[event_idx, "player_id"]
             event_type = ep_events.at[event_idx, "spadl_type"]
-            is_incoming = event_type in config.INCOMING + ["tackle"]
+            is_incoming = event_type in config.INCOMING + ["bad_touch", "tackle"]
             if event_type == "tackle":
                 score_fn = utils.nw_score_minor
             elif event_type == "dispossessed":
