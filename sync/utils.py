@@ -123,7 +123,7 @@ def nw_score_takeon(features: pd.DataFrame, player_id: str, incoming: bool = Fal
         + 20 * player_speed_func(f["max_speed"].fillna(0).to_numpy())
         # + 20 * player_speed_func(f["delta_speed"].fillna(0).to_numpy() * 2)
         + 20 * player_dist_func(f["oppo_dist"].fillna(10).to_numpy() - 3)
-        + 40 * angle_change_func(f["angle_change"].fillna(0).to_numpy())
+        + 40 * angle_change_func(f["angle_change"].fillna(1).to_numpy())
     )
     return scores
 
