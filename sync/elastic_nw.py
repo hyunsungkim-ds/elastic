@@ -5,6 +5,7 @@ from typing import List, Tuple
 if not os.getcwd() in sys.path:
     sys.path.append(os.getcwd())
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
@@ -118,7 +119,7 @@ class ELASTIC_NW:
         assert "episode_id" in events.columns
 
         prev_events = events.shift(1)
-        target_types = ["pass", "cross", "shot", "clearance", "dispossessed"]
+        target_types = ["pass", "cross", "shot", "clearance", "take_on", "dispossessed"]
         target_mask = (
             (events["spadl_type"].isin(target_types))
             & (prev_events["episode_id"] == events["episode_id"])
@@ -208,6 +209,7 @@ class ELASTIC_NW:
         output_cols = [
             "episode_id",
             "frame_id",
+            "timestamp",
             "player_id",
             "player_dist",
             "ball_height",
@@ -242,11 +244,8 @@ class ELASTIC_NW:
             if ball_data.empty:
                 continue
 
-            ball_heights = ball_data["z"].to_numpy()
             ball_accels = ball_data["accel_v"].to_numpy()
-            height_valleys = find_peaks(-ball_heights, prominence=0.5)[0]
             accel_peaks = find_peaks(ball_accels, prominence=10, distance=10)[0]
-            height_peak_frames = ball_data.index[height_valleys] if height_valleys.size > 0 else []
             accel_peak_frames = ball_data.index[accel_peaks] if accel_peaks.size > 0 else []
 
             ball_features = ball_data[["x", "y", "z", "accel_v"]].copy()
@@ -266,16 +265,16 @@ class ELASTIC_NW:
                 if features.empty:
                     return pd.DataFrame()
 
-                dist_valleys = find_peaks(-features["player_dist"].values, prominence=1)[0]
-                height_pos = features.index.get_indexer(height_peak_frames)
-                height_pos = height_pos[height_pos >= 0]
+                is_out = str(player_id).startswith("out_")
+
+                # Detect player_dist valleys
+                dist_arr = features["player_dist"].to_numpy()
+                dist_valleys = find_peaks(-dist_arr, prominence=1)[0]
+                cand_idx = set(dist_valleys.tolist())
+
+                # Add ball accel peaks (full episode) not already covered within ±3 frames
                 accel_pos = features.index.get_indexer(accel_peak_frames)
                 accel_pos = accel_pos[accel_pos >= 0]
-
-                cand_idx = set(dist_valleys.tolist())
-                for i in height_pos:
-                    if not any(abs(i - c) <= 3 for c in cand_idx):
-                        cand_idx.add(int(i))
                 for i in accel_pos:
                     if not any(abs(i - c) <= 3 for c in cand_idx):
                         cand_idx.add(int(i))
@@ -305,7 +304,7 @@ class ELASTIC_NW:
                     player_cands.at[idx, "ball_height"] = window["ball_height"].min()
                     player_cands.at[idx, "ball_accel"] = window["ball_accel"].max()
 
-                if str(player_id).startswith("out_"):
+                if is_out:
                     valid_mask = player_cands["player_dist"] < 1
                 else:
                     valid_mask = (player_cands["player_dist"] < 3) & (player_cands["ball_height"] < 3.5)
@@ -368,6 +367,7 @@ class ELASTIC_NW:
                         episode_cands = pd.concat([first_row, episode_cands], ignore_index=True)
 
             episode_cands = self.calculate_oppo_features(episode_cands, merged_data=merged)
+            episode_cands["timestamp"] = episode_cands["frame_id"].map(frames["timestamp"])
             cand_frames.append(episode_cands[output_cols])
 
         if len(cand_frames) == 0:
@@ -425,6 +425,74 @@ class ELASTIC_NW:
         out_mask = output["player_id"].astype(str).str.startswith(("out_", "goal_"))
         output.loc[out_mask & output["pre_kick_dist"].isna(), "pre_kick_dist"] = 5.0
         output.loc[out_mask & output["post_kick_dist"].isna(), "post_kick_dist"] = 5.0
+
+        return output
+
+    def calculate_takeon_features(self, cand_frames: pd.DataFrame) -> pd.DataFrame:
+        """Add take-on scoring features to candidate frames.
+
+        Computes ``player_speed``, ``max_speed``, ``delta_speed``, and
+        ``angle_change`` for each candidate frame. These are required by
+        ``utils.nw_score_takeon``.
+
+        ``angle_change`` is the cosine of the angle between the opponent's
+        relative position vector 0.2 s before and 1 s after the frame,
+        capturing how much the dribbler changed direction around the opponent.
+        """
+        output = cand_frames.copy()
+        output[["player_speed", "max_speed", "delta_speed", "angle_change"]] = np.nan
+
+        player_tracking = self.tracking[self.tracking["player_id"].notna()][
+            ["frame_id", "player_id", "x", "y", "speed"]
+        ]
+        # Build per-player lookup indexed by frame_id
+        player_xy_speed = {
+            pid: grp.set_index("frame_id")[["x", "y", "speed"]].sort_index()
+            for pid, grp in player_tracking.groupby("player_id")
+        }
+
+        for (episode_id, player_id), group in output.groupby(["episode_id", "player_id"]):
+            if str(player_id).startswith("out_"):
+                continue
+            if player_id not in player_xy_speed:
+                continue
+
+            ep_frame_ids = self.frames[self.frames["episode_id"] == episode_id].index
+            pt = player_xy_speed[player_id]
+            pt = pt[pt.index.isin(ep_frame_ids)]
+            if pt.empty:
+                continue
+
+            for idx in group.index:
+                frame = output.at[idx, "frame_id"]
+                if frame not in pt.index:
+                    continue
+
+                speed = pt.at[frame, "speed"]
+                max_spd = pt.loc[frame : frame + int(0.5 * self.fps), "speed"].max()
+                output.at[idx, "player_speed"] = speed
+                output.at[idx, "max_speed"] = max_spd
+                output.at[idx, "delta_speed"] = max_spd - speed
+
+                oppo_id = output.at[idx, "oppo_id"]
+                if pd.isna(oppo_id) or oppo_id not in player_xy_speed:
+                    continue
+
+                ot = player_xy_speed[oppo_id]
+                ot = ot[ot.index.isin(ep_frame_ids)]
+                if ot.empty:
+                    continue
+
+                f_before = ot.index[max(ot.index.searchsorted(frame - int(0.2 * self.fps)), 0)]
+                f_after = ot.index[min(ot.index.searchsorted(frame + int(self.fps)), len(ot) - 1)]
+
+                if f_before not in pt.index or f_after not in pt.index:
+                    continue
+
+                vec1 = (ot.loc[f_before, ["x", "y"]] - pt.loc[f_before, ["x", "y"]]).to_numpy()
+                vec2 = (ot.loc[f_after, ["x", "y"]] - pt.loc[f_after, ["x", "y"]]).to_numpy()
+                n1, n2 = np.linalg.norm(vec1), np.linalg.norm(vec2)
+                output.at[idx, "angle_change"] = np.dot(vec1, vec2) / (n1 * n2) if n1 > 0 and n2 > 0 else 0.0
 
         return output
 
@@ -517,11 +585,16 @@ class ELASTIC_NW:
         return aligned
 
     def align_episode(
-        self, episode_id: int, events: pd.DataFrame = None, cand_frames: pd.DataFrame = None
+        self,
+        episode_id: int,
+        events: pd.DataFrame = None,
+        cand_frames: pd.DataFrame = None,
+        include_takeon: bool = True,
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Align events and candidate frames for a single episode using Needleman-Wunsch algorithm.
-        PASS_LIKE_OPEN, SET_PIECE, INCOMING, bad_touch, tackle, and dispossessed are aligned.
+        PASS_LIKE_OPEN, SET_PIECE, INCOMING, bad_touch, tackle, dispossessed, and optionally
+        take_on are aligned.
 
         Returns
         -------
@@ -535,7 +608,7 @@ class ELASTIC_NW:
             Optimal alignment path with event/frame positions, ids, and timestamps.
         """
         if events is None:
-            assert isinstance(events, pd.DataFrame)
+            # assert isinstance(events, pd.DataFrame)
             events = self.events.copy()
 
         if "episode_id" not in events.columns:
@@ -551,7 +624,12 @@ class ELASTIC_NW:
         if "pre_kick_dist" not in cand_frames.columns:
             cand_frames = self.calculate_kick_dists(cand_frames)
 
+        if include_takeon and "player_speed" not in cand_frames.columns:
+            cand_frames = self.calculate_takeon_features(cand_frames)
+
         minor_types = ["bad_touch", "tackle", "dispossessed"]
+        if include_takeon:
+            minor_types.append("take_on")
         event_types = config.PASS_LIKE_OPEN + config.SET_PIECE + config.INCOMING + minor_types + ["out"]
 
         ep_events = events[(events["episode_id"] == episode_id) & (events["spadl_type"].isin(event_types))]
@@ -585,6 +663,9 @@ class ELASTIC_NW:
             elif event_type == "dispossessed":
                 kick_dist_col = "post_kick_dist"
                 score_fn = utils.nw_score_minor
+            elif event_type == "take_on":
+                kick_dist_col = "post_kick_dist"
+                score_fn = utils.nw_score_takeon
             else:
                 kick_dist_col = "pre_kick_dist" if event_type in config.INCOMING else "post_kick_dist"
                 score_fn = utils.nw_score_major
@@ -596,10 +677,13 @@ class ELASTIC_NW:
             frame_pos = [frame_pos_map[frame_id] for frame_id in player_scores.index]
             score_mat[i, frame_pos] = player_scores.to_numpy()
 
-        gap_event = -10.0
-        gap_frame = -10.0
-        repeat_penalty = -20.0
+        gap_event = 10.0
+        gap_frame = 0.0
         repeat_threshold = 50.0
+
+        event_players = ep_events["player_id"].to_numpy()
+        event_types = ep_events["spadl_type"].to_numpy()
+
         dp_mat = np.zeros((n_events + 1, n_frames + 1), dtype=float)
         trace = np.zeros((n_events + 1, n_frames + 1), dtype=np.int8)
 
@@ -617,6 +701,10 @@ class ELASTIC_NW:
                 left_gap = dp_mat[i, j - 1] + gap_frame
                 up_match = -np.inf
                 if score_mat[i - 1, j - 1] >= repeat_threshold:
+                    if event_players[i - 1] == event_players[i - 2]:
+                        repeat_penalty = -30.0 if event_types[i - 1] == event_types[i - 2] else 0.0
+                    else:
+                        repeat_penalty = -10.0
                     up_match = dp_mat[i - 1, j] + score_mat[i - 1, j - 1] + repeat_penalty
                 if diag >= up_gap and diag >= left_gap and diag >= up_match:
                     dp_mat[i, j] = diag
@@ -693,7 +781,12 @@ class ELASTIC_NW:
         score_mat = pd.DataFrame(score_mat, index=ep_events.index, columns=ep_frame_ids)
         return aligned, score_mat, dp_mat, path
 
-    def run(self, events: pd.DataFrame = None, simplify_one_touch: bool = True) -> pd.DataFrame:
+    def run(
+        self,
+        events: pd.DataFrame = None,
+        include_takeon: bool = False,
+        simplify_one_touch: bool = True,
+    ) -> pd.DataFrame:
         """
         Runs Needleman-Wunsch alignment across the full match by episode.
         """
@@ -708,9 +801,13 @@ class ELASTIC_NW:
         if "pre_kick_dist" not in self.cand_frames.columns:
             self.cand_frames = self.calculate_kick_dists(self.cand_frames)
 
+        _include_takeon = include_takeon and events["spadl_type"].eq("take_on").any()
+        if _include_takeon and "player_speed" not in self.cand_frames.columns:
+            self.cand_frames = self.calculate_takeon_features(self.cand_frames)
+
         matches = []
         for episode_id in tqdm(self.frames["episode_id"].unique(), desc="Needleman-Wunsch alignment"):
-            episode_matches, _, _, _ = self.align_episode(episode_id, events)
+            episode_matches, _, _, _ = self.align_episode(episode_id, events, include_takeon=_include_takeon)
             if not episode_matches.empty:
                 matches.append(episode_matches)
 
