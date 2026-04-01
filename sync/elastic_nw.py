@@ -271,7 +271,7 @@ class ELASTIC_NW:
 
                 # Detect player_dist valleys
                 dist_arr = features["player_dist"].to_numpy()
-                dist_valleys = find_peaks(-dist_arr, height=-3, distance=3, prominence=0.5)[0]
+                dist_valleys = find_peaks(-dist_arr, height=-3, distance=3, prominence=0.3)[0]
                 cand_idx = set(dist_valleys.tolist())
 
                 # Add ball accel peaks not already covered within ±3 frames
@@ -591,40 +591,76 @@ class ELASTIC_NW:
 
         return output.drop(columns=["team", "home_id", "home_dist", "away_id", "away_dist"])
 
-    def _append_foul_alignment(self, aligned: pd.DataFrame, ep_frames: pd.DataFrame) -> pd.DataFrame:
-        aligned_frames = aligned["frame_id"].dropna()
-        if aligned_frames.empty:
-            return aligned
-
+    def _sync_fouls(self, aligned: pd.DataFrame, ep_frames: pd.DataFrame) -> pd.DataFrame:
         episode_id = aligned["episode_id"].iloc[0]
         episode_events: pd.DataFrame = self.events[self.events["episode_id"] == episode_id]
-        if episode_events.empty or episode_events["spadl_type"].iloc[-1] != "foul":
+        if episode_events.empty or (episode_events["spadl_type"] != "foul").all():
             return aligned
 
-        # Collect trailing consecutive foul events
-        foul_indices = []
-        for i in range(len(episode_events) - 1, -1, -1):
-            if episode_events["spadl_type"].iloc[i] == "foul":
-                foul_indices.append(i)
+        ep_last_frame = self.frames[self.frames["episode_id"] == episode_id].index[-1]
+        cands_sorted = ep_frames.sort_values("frame_id")
+
+        foul_pos = np.where(episode_events["spadl_type"].to_numpy() == "foul")[0]
+        group_ids = np.cumsum(np.diff(foul_pos, prepend=foul_pos[0] - 2) > 1)
+        foul_groups = [foul_pos[group_ids == g].tolist() for g in np.unique(group_ids)]
+
+        for group in foul_groups:
+            first_idx = episode_events.index[group[0]]
+            last_idx = episode_events.index[group[-1]]
+
+            prev_frames = aligned.loc[aligned.index < first_idx, "frame_id"].dropna()
+            prev_frame = prev_frames.iloc[-1] if not prev_frames.empty else 0
+            next_frames = aligned.loc[aligned.index > last_idx, "frame_id"].dropna()
+            next_frame = next_frames.iloc[0] if not next_frames.empty else ep_last_frame
+
+            window = cands_sorted[(cands_sorted["frame_id"] > prev_frame) & (cands_sorted["frame_id"] <= next_frame)]
+
+            if len(group) == 2:
+                player_a = episode_events.iloc[group[0]]["player_id"]
+                player_b = episode_events.iloc[group[1]]["player_id"]
+                pair = {player_a, player_b}
+                match = window[window.apply(lambda r: {r["player_id"], r["oppo_id"]} == pair, axis=1)]
             else:
-                break
-        foul_indices.reverse()
+                player_a = episode_events.iloc[group[0]]["player_id"]
+                match = window[window["player_id"] == player_a]
 
-        last_foul_event = episode_events.iloc[foul_indices[-1]].copy()
-        last_aligned_frame = aligned_frames.iloc[-1]
-
-        player_cands = ep_frames[ep_frames["player_id"] == last_foul_event["player_id"]]
-        if not player_cands.empty:
-            last_cand = player_cands.sort_values("frame_id").iloc[-1]
-            last_cand_frame = last_cand["frame_id"]
-            if pd.notna(last_cand_frame) and last_cand_frame >= last_aligned_frame:
-                for fi in foul_indices:
-                    foul_event = episode_events.iloc[fi].copy()
-                    foul_event["frame_id"] = last_cand_frame
-                    foul_event["timestamp"] = self.frames.at[last_cand_frame, "timestamp"]
+            if not match.empty:
+                frame_id = match["frame_id"].iloc[-1]
+                for pos in group:
+                    foul_event = episode_events.iloc[pos].copy()
+                    foul_event["frame_id"] = frame_id
+                    foul_event["timestamp"] = self.frames.at[frame_id, "timestamp"]
                     foul_event["score"] = np.nan
                     aligned.loc[foul_event.name] = foul_event[config.ALIGNED_COLS]
-                return aligned
+
+        return aligned
+
+    @staticmethod
+    def _adjust_dispossessed_frames(aligned: pd.DataFrame) -> pd.DataFrame:
+        if len(aligned) < 2:
+            return aligned
+
+        types = aligned["spadl_type"].to_numpy()
+        players = aligned["player_id"].to_numpy()
+        scores = aligned["score"].to_numpy(dtype=float)
+        frames = aligned["frame_id"].to_numpy(dtype=float)
+
+        frame_col = aligned.columns.get_loc("frame_id")
+        ts_col = aligned.columns.get_loc("timestamp")
+
+        for i in range(len(aligned) - 1):
+            # Unify dispossessed-tackle across teams
+            if {types[i], types[i + 1]} == {"dispossessed", "tackle"} and players[i][:4] != players[i + 1][:4]:
+                better = i if scores[i] >= scores[i + 1] else i + 1
+                aligned.iloc[i, frame_col] = frames[better]
+                aligned.iloc[i + 1, frame_col] = frames[better]
+                aligned.iloc[i, ts_col] = aligned.iloc[better]["timestamp"]
+                aligned.iloc[i + 1, ts_col] = aligned.iloc[better]["timestamp"]
+
+            # Snap dispossessed to the next event's frame if same player
+            elif types[i] == "dispossessed" and players[i] == players[i + 1]:
+                aligned.iloc[i, frame_col] = aligned.iloc[i + 1, frame_col]
+                aligned.iloc[i, ts_col] = aligned.iloc[i + 1, ts_col]
 
         return aligned
 
@@ -633,7 +669,6 @@ class ELASTIC_NW:
         episode_id: int,
         events: pd.DataFrame = None,
         cand_frames: pd.DataFrame = None,
-        include_takeon: bool = True,
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Align events and candidate frames for a single episode using Needleman-Wunsch algorithm.
@@ -668,12 +703,10 @@ class ELASTIC_NW:
         if "pre_kick_dist" not in cand_frames.columns:
             cand_frames = self.calculate_kick_dists(cand_frames)
 
-        if include_takeon and "player_speed" not in cand_frames.columns:
+        if "player_speed" not in cand_frames.columns:
             cand_frames = self.calculate_takeon_features(cand_frames)
 
-        minor_types = ["bad_touch", "tackle", "dispossessed"]
-        if include_takeon:
-            minor_types.append("take_on")
+        minor_types = ["bad_touch", "tackle", "dispossessed", "take_on"]
         event_types = config.PASS_LIKE_OPEN + config.SET_PIECE + config.INCOMING + minor_types + ["out"]
 
         ep_events = events[(events["episode_id"] == episode_id) & (events["spadl_type"].isin(event_types))]
@@ -743,7 +776,12 @@ class ELASTIC_NW:
                 up_match = -np.inf
                 if score_mat[i - 1, j - 1] >= repeat_threshold:
                     if event_players[i - 1] == event_players[i - 2]:
-                        repeat_penalty = -30.0 if event_types[i - 1] == event_types[i - 2] else 0.0
+                        if event_types[i - 1] in [event_types[i - 2], "bad_touch"]:
+                            repeat_penalty = -30.0
+                        elif event_types[i - 1] == "ball_recovery":
+                            repeat_penalty = -10.0
+                        else:
+                            repeat_penalty = 0.0
                     else:
                         repeat_penalty = -10.0
                     up_match = dp_mat[i - 1, j] + score_mat[i - 1, j - 1] + repeat_penalty
@@ -818,16 +856,12 @@ class ELASTIC_NW:
         path = pd.DataFrame(path_rows)
 
         aligned = pd.concat([events.loc[matches.index], matches], axis=1)[config.ALIGNED_COLS]
-        aligned = self._append_foul_alignment(aligned, ep_frames)
+        aligned = self._sync_fouls(aligned, ep_frames)
+        aligned = self._adjust_dispossessed_frames(aligned)
         score_mat = pd.DataFrame(score_mat, index=ep_events.index, columns=ep_frame_ids)
         return aligned, score_mat, dp_mat, path
 
-    def run(
-        self,
-        events: pd.DataFrame = None,
-        include_takeon: bool = False,
-        simplify_one_touch: bool = True,
-    ) -> pd.DataFrame:
+    def run(self, events: pd.DataFrame = None, simplify_one_touch: bool = True) -> pd.DataFrame:
         """
         Runs Needleman-Wunsch alignment across the full match by episode.
         """
@@ -842,13 +876,12 @@ class ELASTIC_NW:
         if "pre_kick_dist" not in self.cand_frames.columns:
             self.cand_frames = self.calculate_kick_dists(self.cand_frames)
 
-        _include_takeon = include_takeon and events["spadl_type"].eq("take_on").any()
-        if _include_takeon and "player_speed" not in self.cand_frames.columns:
+        if "player_speed" not in self.cand_frames.columns:
             self.cand_frames = self.calculate_takeon_features(self.cand_frames)
 
         matches = []
         for episode_id in tqdm(self.frames["episode_id"].unique(), desc="Needleman-Wunsch alignment"):
-            episode_matches, _, _, _ = self.align_episode(episode_id, events, include_takeon=_include_takeon)
+            episode_matches, _, _, _ = self.align_episode(episode_id, events)
             if not episode_matches.empty:
                 matches.append(episode_matches)
 
