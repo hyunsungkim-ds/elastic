@@ -2,6 +2,7 @@
 animations/
 data/
 private/
+.claude/plans/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -293,7 +293,7 @@ def collapse_events(events: pd.DataFrame, tracking: pd.DataFrame | None = None) 
         prev_event["receive_ts"] = current_row[time_col] if time_col is not None else np.nan
 
     for _, row in events.iterrows():
-        if row["spadl_type"] in ["control", "out"]:
+        if row["spadl_type"] in ["control", "out", "goal"]:
             if _can_assign_receive(collapsed_rows[-1] if collapsed_rows else None, row):
                 _assign_receive(collapsed_rows[-1], row)
             continue
@@ -444,6 +444,8 @@ def calculate_accuracy(
     # synced = synced[~synced["spadl_type"].isin(["take_on", "second_take_on"])].copy().reset_index(drop=True)
     if "receive_frame_id" not in synced.columns:
         synced = collapse_events(synced).reset_index(drop=True)
+    else:
+        synced = synced[~synced["spadl_type"].isin(["control", "out", "goal"])].reset_index(drop=True)
 
     annotated = annotated.copy()
     # annotated = annotated[~annotated["spadl_type"].isin(["take_on", "second_take_on"])].reset_index(drop=True)

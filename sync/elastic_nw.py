@@ -66,50 +66,71 @@ class ELASTIC_NW:
 
         if detect_controls:
             self.events = ELASTIC_NW.insert_control_events(self.events)
-            self.events = ELASTIC_NW.insert_out_events(self.events)
+            self.events = self.insert_out_events(self.events)
+            self.events = ELASTIC_NW.insert_goal_events(self.events)
 
         # Precomputed candidate frames (to be filled by find_candidate_frames)
         self.cand_frames: pd.DataFrame = None
 
-    @staticmethod
-    def infer_out_player_id(event: pd.Series) -> str:
+    def _infer_out_player_id(self, event: pd.Series) -> str:
         event_type = event.get("spadl_type")
-        x = pd.to_numeric(event.get("start_x"), errors="coerce")
-        y = pd.to_numeric(event.get("start_y"), errors="coerce")
-        if event_type == "throw_in":
-            return "out_top" if float(y) >= config.PITCH_Y / 2 else "out_bottom"
-        else:
-            return "out_left" if float(x) <= config.PITCH_X / 2 else "out_right"
+        team = str(event.get("player_id", ""))[:4]
+        is_home = team == "home"
 
-    @staticmethod
-    def insert_out_events(events: pd.DataFrame) -> pd.DataFrame:
-        """Insert virtual out events before OOP set pieces that end pass-like sequences."""
+        if event_type == "throw_in":
+            utc = event.get("utc_timestamp")
+            if pd.notna(utc):
+                ball = self.tracking[self.tracking["ball"]].copy()
+                time_diff = (ball["utc_timestamp"] - utc).abs()
+                nearest_idx = time_diff.idxmin()
+                ball_y = ball.at[nearest_idx, "y"]
+                return "out_top" if ball_y >= config.PITCH_Y / 2 else "out_bottom"
+            return "out_bottom"
+        elif event_type == "goalkick":
+            return "out_left" if is_home else "out_right"
+        else:  # corner_short, corner_crossed
+            return "out_right" if is_home else "out_left"
+
+    def insert_out_events(self, events: pd.DataFrame) -> pd.DataFrame:
+        """Insert virtual out events before OOP set pieces."""
         assert "episode_id" in events.columns
 
         events = events.copy()
-        prev_events = events.shift(1)
-        pass_like_types = config.PASS_LIKE_OPEN + config.SET_PIECE
-        target_mask = (
-            events["spadl_type"].isin(config.SET_PIECE_OOP)
-            & prev_events["spadl_type"].isin(pass_like_types)
-            & (prev_events["period_id"] == events["period_id"])
-            & (prev_events["episode_id"] != events["episode_id"])
-            & (prev_events["utc_timestamp"] < events["utc_timestamp"])
-        )
-        if not target_mask.any():
-            return events
+        target_mask = events["spadl_type"].isin(config.SET_PIECE_OOP)
 
         out_events = events.loc[target_mask].copy()
-        out_events["player_id"] = out_events.apply(ELASTIC_NW.infer_out_player_id, axis=1)
+        out_events["player_id"] = out_events.apply(self._infer_out_player_id, axis=1)
         out_events["spadl_type"] = "out"
         out_events["success"] = True
-        out_events["episode_id"] = prev_events.loc[target_mask, "episode_id"].to_numpy()
-        out_events["utc_timestamp"] = prev_events.loc[target_mask, "utc_timestamp"].to_numpy()
+        out_events["episode_id"] = events.shift(1).loc[target_mask, "episode_id"].to_numpy()
+        out_events["utc_timestamp"] = events.shift(1).loc[target_mask, "utc_timestamp"].to_numpy()
 
         events["order"] = events.index.astype(float)
         out_events["order"] = out_events.index.astype(float) - 0.5
 
         combined = pd.concat([events, out_events], axis=0, ignore_index=False)
+        combined = combined.sort_values("order", kind="mergesort", ignore_index=True).drop(columns=["order"])
+        return combined
+
+    @staticmethod
+    def insert_goal_events(events: pd.DataFrame) -> pd.DataFrame:
+        """Insert virtual goal events after successful shots."""
+        events = events.copy()
+        shot_types = {"shot", "shot_freekick", "shot_penalty"}
+        target_mask = events["spadl_type"].isin(shot_types) & events["success"]
+        if not target_mask.any():
+            return events
+
+        goal_events = events.loc[target_mask].copy()
+        is_home = goal_events["player_id"].str[:4] == "home"
+        goal_events["player_id"] = np.where(is_home, "goal_right", "goal_left")
+        goal_events["spadl_type"] = "goal"
+        goal_events["success"] = True
+
+        events["order"] = events.index.astype(float)
+        goal_events["order"] = goal_events.index.astype(float) + 0.5
+
+        combined = pd.concat([events, goal_events], axis=0, ignore_index=False)
         combined = combined.sort_values("order", kind="mergesort", ignore_index=True).drop(columns=["order"])
         return combined
 
@@ -130,6 +151,40 @@ class ELASTIC_NW:
         control_events = events.loc[target_mask].copy()
         control_events["spadl_type"] = "control"
         control_events["success"] = True
+
+        # Also insert control before foul events (preceded by non-shot pass-like or set-piece)
+        foul_mask = (
+            (events["spadl_type"] == "foul")
+            & (prev_events["spadl_type"].isin(["pass", "cross"] + [t for t in config.SET_PIECE if t[:4] != "shot"]))
+            & (prev_events["episode_id"] == events["episode_id"])
+            & (prev_events["utc_timestamp"] < events["utc_timestamp"])
+        )
+        if foul_mask.any():
+            foul_controls = events.loc[foul_mask].copy()
+            foul_controls["spadl_type"] = "control"
+            foul_controls["success"] = True
+
+            for idx in foul_controls.index:
+                next_idx = idx + 1 if idx + 1 < len(events) else None
+                next_is_foul = next_idx is not None and events.at[next_idx, "spadl_type"] == "foul"
+                foul_player = events.at[idx, "player_id"]
+
+                if not next_is_foul:
+                    # Single foul: control player = foul player
+                    foul_controls.at[idx, "player_id"] = foul_player
+                else:
+                    # Double foul: pick the receiver based on prev pass success
+                    prev_player = prev_events.at[idx, "player_id"]
+                    next_foul_player = events.at[next_idx, "player_id"]
+                    if prev_events.at[idx, "success"]:
+                        # Receiver is on the same team as passer
+                        receiver = foul_player if prev_player[:4] == foul_player[:4] else next_foul_player
+                    else:
+                        # Receiver is on the opposite team
+                        receiver = foul_player if prev_player[:4] != foul_player[:4] else next_foul_player
+                    foul_controls.at[idx, "player_id"] = receiver
+
+            control_events = pd.concat([control_events, foul_controls], ignore_index=False)
 
         events = events.copy()
         events["order"] = events.index.astype(float)
@@ -346,6 +401,8 @@ class ELASTIC_NW:
                 "out_right": config.PITCH_X - ball_data["x"],
                 "out_bottom": ball_data["y"],
                 "out_top": config.PITCH_Y - ball_data["y"],
+                "goal_left": ball_data["x"],
+                "goal_right": config.PITCH_X - ball_data["x"],
             }
             for out_player_id, out_dists in out_feature_map.items():
                 out_features = pd.DataFrame(
@@ -707,7 +764,7 @@ class ELASTIC_NW:
             cand_frames = self.calculate_takeon_features(cand_frames)
 
         minor_types = ["bad_touch", "tackle", "dispossessed", "take_on"]
-        event_types = config.PASS_LIKE_OPEN + config.SET_PIECE + config.INCOMING + minor_types + ["out"]
+        event_types = config.PASS_LIKE_OPEN + config.SET_PIECE + config.INCOMING + minor_types + ["out", "goal"]
 
         ep_events = events[(events["episode_id"] == episode_id) & (events["spadl_type"].isin(event_types))]
         ep_frames = cand_frames[cand_frames["episode_id"] == episode_id]
