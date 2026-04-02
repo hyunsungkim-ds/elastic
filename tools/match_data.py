@@ -124,6 +124,7 @@ class MatchData(ABC):
         if ffill:
             merged[renamed_cols[2:]] = merged[renamed_cols[2:]].ffill()
 
+        merged = merged.groupby("frame_id", sort=False).first().reset_index()
         return merged
 
     def merge_synced_events_and_tracking(
@@ -156,4 +157,5 @@ class MatchData(ABC):
             ffill_cols = [col for col in ffill_cols if col in merged.columns]
             merged[ffill_cols] = merged[ffill_cols].ffill()
 
+        merged = merged.groupby("frame_id", sort=False).first().reset_index()
         return merged
