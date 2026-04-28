@@ -307,28 +307,43 @@ def collapse_events(events: pd.DataFrame, tracking: pd.DataFrame | None = None) 
                 # previous pass-like event's receive frame.
                 _assign_receive(collapsed_rows[-1], row)
 
-        collapsed_rows.append(
-            {
-                "period_id": row["period_id"],
-                "episode_id": row["episode_id"] if "episode_id" in row.index else np.nan,
-                "player_id": row["player_id"],
-                "spadl_type": row["spadl_type"],
-                "frame_id": row["frame_id"],
-                "synced_ts": row[time_col] if time_col is not None else np.nan,
-                "receiver_id": np.nan,
-                "receive_frame_id": np.nan,
-                "receive_ts": np.nan,
-                "success": row["success"],
-                "offside": False,
-            }
-        )
+        new_row = {
+            "period_id": row["period_id"],
+            "episode_id": row["episode_id"] if "episode_id" in row.index else np.nan,
+            "player_id": row["player_id"],
+            "spadl_type": row["spadl_type"],
+            "frame_id": row["frame_id"],
+            "synced_ts": row[time_col] if time_col is not None else np.nan,
+            "utc_timestamp": row["utc_timestamp"] if "utc_timestamp" in row.index else np.nan,
+            "receiver_id": np.nan,
+            "receive_frame_id": np.nan,
+            "receive_ts": np.nan,
+            "success": row["success"],
+            "offside": row["offside"] if "offside" in row.index else False,
+            "expected_goal": row["expected_goal"] if "expected_goal" in row.index else np.nan,
+        }
+        collapsed_rows.append(new_row)
 
     collapsed = pd.DataFrame(collapsed_rows)
 
-    if tracking is not None and not collapsed.empty:
+    if collapsed.empty:
+        return collapsed.reset_index(drop=True)
+
+    # Add next_player_id, next_type (per period)
+    for period in collapsed["period_id"].unique():
+        pmask = collapsed["period_id"] == period
+        collapsed.loc[pmask, "next_player_id"] = collapsed.loc[pmask, "player_id"].shift(-1)
+        collapsed.loc[pmask, "next_type"] = collapsed.loc[pmask, "spadl_type"].shift(-1)
+
+    # object_id = player_id
+    collapsed["object_id"] = collapsed["player_id"]
+
+    if tracking is not None:
         ball_tracking = tracking[tracking["ball"]].drop_duplicates("frame_id").set_index("frame_id")
         collapsed["start_x"] = collapsed["frame_id"].map(ball_tracking["x"])
         collapsed["start_y"] = collapsed["frame_id"].map(ball_tracking["y"])
+        collapsed["end_x"] = collapsed["receive_frame_id"].map(ball_tracking["x"])
+        collapsed["end_y"] = collapsed["receive_frame_id"].map(ball_tracking["y"])
 
     return collapsed.reset_index(drop=True)
 

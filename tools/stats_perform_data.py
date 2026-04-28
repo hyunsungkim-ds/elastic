@@ -114,7 +114,17 @@ class StatsPerformData(MatchData):
         if "timestamp" not in self.events.columns or "object_id" not in self.events.columns:
             self.refine_events()
 
-        input_cols = ["period_id", "utc_timestamp", "object_id", "spadl_type", "start_x", "start_y", "success"]
+        input_cols = [
+            "period_id",
+            "utc_timestamp",
+            "object_id",
+            "spadl_type",
+            "start_x",
+            "start_y",
+            "success",
+            "offside",
+            "expected_goal",
+        ]
         return self.events[input_cols].rename(columns={"object_id": "player_id"}).copy()
 
 

@@ -950,14 +950,14 @@ class ELASTIC_NW:
         else:
             aligned = pd.DataFrame(columns=config.ALIGNED_COLS)
 
-        events["timestamp"] = events["frame_id"].map(self.frames["timestamp"].to_dict())
+        events["synced_ts"] = events["frame_id"].map(self.frames["timestamp"].to_dict())
 
         if simplify_one_touch:
             control_mask = events["spadl_type"] == "control"
             one_touch_mask = (events["frame_id"].shift(-1) == events["frame_id"]) | events["frame_id"].shift(-1).isna()
             events = events.loc[~(control_mask & one_touch_mask)].reset_index(drop=True)
-        # return events[config.ALIGNED_COLS + ["start_x", "start_y", "utc_timestamp"]]
-        return events[config.ALIGNED_COLS]
+
+        return events
 
     def plot_features(self, start_frame: int, end_frame: int, ax: plt.Axes = None) -> plt.Axes:
         """Plot player_dist and ball_accel for a frame range, with candidate frames marked.

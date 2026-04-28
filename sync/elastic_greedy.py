@@ -770,6 +770,8 @@ class ELASTIC_Greedy:
         self.events["synced_ts"] = self.events["frame_id"].map(self.frames["timestamp"].to_dict())
         self.events["receive_ts"] = self.events["receive_frame_id"].map(self.frames["timestamp"].to_dict())
 
+        return self.events
+
     def plot_window_features(self, event_idx: int, display_title: bool = True, save_path: str = None) -> pd.DataFrame:
         """
         Plots the feature time-series for a given event for validation.
