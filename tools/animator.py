@@ -18,7 +18,7 @@ from tools.sportec_data import SportecData
 
 anim_config = {
     "sports": "soccer",  # soccer or basketball
-    "figsize": (10.8, 7.2),
+    "figsize": (9, 7),
     "fontsize": 15,
     "player_size": 400,
     "ball_size": 150,
@@ -250,7 +250,6 @@ class Animator:
         if self.sports == "soccer":
             fig, ax = plt.subplots(figsize=anim_config["figsize"])
             mps.field("green", self.pitch_size[0], self.pitch_size[1], fig, ax, show=False)
-            # fig.set_tight_layout(True)
         else:
             fig, ax = plt.subplots(figsize=(10, 5.2))
             ax.set_xlim(-2, self.pitch_size[0] + 2)
@@ -259,6 +258,8 @@ class Animator:
             ax.grid(False)
             court = plt.imread("images/bball_court.png")
             ax.imshow(court, zorder=0, extent=[0, self.pitch_size[0], self.pitch_size[1], 0])
+
+        fig.subplots_adjust(left=0, right=1, bottom=0.05, top=0.95)
 
         for key in self.track_dict.keys():
             self.plot_init(ax, key)
@@ -414,5 +415,5 @@ if __name__ == "__main__":
             animator = Animator({"main": segment_data}, show_events=True)
             anim = animator.run()
 
-            anim_path = f"animations/sportec_{args.match_id}_{period}_{t_start}-{t_end}.mp4"
+            anim_path = f"animations/sportec_{args.match_id}_{period}_{t_start:04d}-{t_end:04d}.mp4"
             anim.save(anim_path, writer=writer)
