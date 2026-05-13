@@ -1,15 +1,9 @@
 {
-    "editor.fontSize": 15,
-    "editor.fontFamily": "Menlo, Monaco, Monospace",
-    "terminal.integrated.fontSize": 15,
     "jupyter.notebookFileRoot": "${workspaceFolder}",
-    "python.linting.flake8Enabled": true,
-    "python.linting.enabled": true,
-    "python.linting.flake8Args": [
+    "flake8.args": [
         "--max-line-length=120",
-        "--ignore=E203,F401,F841,W503,F403,F405",
+        "--ignore=E203,E402,F401,F841,W503,F403,F405"
     ],
-    "python.formatting.provider": "none",
     "[python]": {
         "editor.defaultFormatter": "ms-python.black-formatter",
         "editor.formatOnSave": true,
@@ -27,5 +21,7 @@
     ],
     "editor.rulers": [
         120
-    ]
+    ],
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda"
 }
