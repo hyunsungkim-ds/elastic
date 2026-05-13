@@ -649,6 +649,9 @@ class ELASTIC_NW:
         return output.drop(columns=["team", "home_id", "home_dist", "away_id", "away_dist"])
 
     def _sync_fouls(self, aligned: pd.DataFrame, ep_frames: pd.DataFrame) -> pd.DataFrame:
+        if aligned.empty or ep_frames.empty:
+            return aligned
+
         episode_id = aligned["episode_id"].iloc[0]
         episode_events: pd.DataFrame = self.events[self.events["episode_id"] == episode_id]
         if episode_events.empty or (episode_events["spadl_type"] != "foul").all():
@@ -907,7 +910,10 @@ class ELASTIC_NW:
             )
 
         match_rows.reverse()
-        matches = pd.DataFrame(match_rows).set_index("index")
+        if match_rows:
+            matches = pd.DataFrame(match_rows).set_index("index")
+        else:
+            matches = pd.DataFrame(columns=["frame_id", "timestamp", "score"], index=pd.Index([], name="index"))
 
         path_rows.reverse()
         path = pd.DataFrame(path_rows)
