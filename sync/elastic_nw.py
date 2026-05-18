@@ -69,8 +69,8 @@ class ELASTIC_NW:
             self.events = self.insert_out_events(self.events)
             self.events = ELASTIC_NW.insert_goal_events(self.events)
 
-        # Precomputed candidate frames (to be filled by find_candidate_frames)
         self.cand_frames: pd.DataFrame = None
+        self.synced_events: pd.DataFrame = None
 
     def _infer_out_player_id(self, event: pd.Series) -> str:
         event_type = event.get("spadl_type")
@@ -966,15 +966,16 @@ class ELASTIC_NW:
         return events
 
     def plot_features(self, start_frame: int, end_frame: int, ax: plt.Axes = None) -> plt.Axes:
-        """Plot player_dist and ball_accel for a frame range, with candidate frames marked.
-
-        For each player whose minimum distance to the ball is < 3 m within the
-        range, the player_dist time series is drawn.  Candidate frames stored in
-        ``self.cand_frames`` are drawn as vertical dashed lines using the same
-        colour as the corresponding player's dist line.
+        """Plot player_dist and ball_accel for a frame range.
 
         Parameters
         ----------
+        events:
+            Event data restricting plotted players to those who triggered events
+            within the frame range. Candidate frames in ``self.cand_frames`` are
+            always drawn as dashed vertical lines; when ``frame_id`` is present
+            in ``events``, each event time is additionally marked with a black
+            solid vertical line.
         start_frame, end_frame:
             Inclusive frame range to visualise.
         ax:
@@ -1001,34 +1002,34 @@ class ELASTIC_NW:
         merged = players.join(ball_xy, on="frame_id", how="inner")
         merged["player_dist"] = np.sqrt((merged["x"] - merged["ball_x"]) ** 2 + (merged["y"] - merged["ball_y"]) ** 2)
 
-        close_players = [pid for pid, grp in merged.groupby("player_id") if grp["player_dist"].min() < 3]
+        target_events = self.synced_events[(self.synced_events["frame_id"].between(start_frame, end_frame))]
+        target_players = target_events["player_id"].unique().tolist()
 
         color_cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
         player_colors: dict[str, str] = {}
-        for i, pid in enumerate(close_players):
+        for i, pid in enumerate(target_players):
             player_colors[pid] = color_cycle[i % len(color_cycle)]
 
-        for pid in close_players:
+        for pid in target_players:
             grp = merged[merged["player_id"] == pid].set_index("frame_id").sort_index()
             ax.plot(grp.index, grp["player_dist"], color=player_colors[pid], label=pid)
 
         # ball_accel (scaled by 1/5 to match player_dist range)
         ax.plot(ball.index, ball["accel_v"] / 5, color="darkgray", linewidth=1.5, label="ball_accel")
 
-        # cand_frames
-        if self.cand_frames is not None:
-            cands_in_range = self.cand_frames[
-                (self.cand_frames["frame_id"] >= start_frame)
-                & (self.cand_frames["frame_id"] <= end_frame)
-                & (self.cand_frames["player_id"].isin(close_players))
-            ]
-            for _, row in cands_in_range.iterrows():
-                ax.axvline(row["frame_id"], color=player_colors[row["player_id"]], linestyle="--")
+        target_cands = self.cand_frames[
+            (self.cand_frames["frame_id"].between(start_frame, end_frame))
+            & (self.cand_frames["player_id"].isin(target_players))
+        ]
+        for _, row in target_cands.iterrows():
+            ax.axvline(row["frame_id"], color=player_colors[row["player_id"]], linestyle="--")
+
+        for f in target_events["frame_id"].dropna().unique():
+            ax.axvline(f, color="black", linestyle="-")
 
         ax.set_ylim(0, 25)
         ax.set_xlabel("frame_id")
         ax.legend(loc="upper right", fontsize=12)
-        ax.set_title(f"Frames {start_frame} - {end_frame}")
         ax.yaxis.grid(True)
         ax.xaxis.grid(False)
         return ax
