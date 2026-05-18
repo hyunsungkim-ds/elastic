@@ -1141,6 +1141,128 @@ class ELASTIC_NW:
         ax.xaxis.grid(False)
         return ax
 
+    def plot_score_matrix(
+        self,
+        start_frame: int,
+        end_frame: int,
+        ax: plt.Axes = None,
+        decimals: int = 2,
+        cell_size: float = 0.9,
+        cmap: str = "Reds",
+    ) -> plt.Axes:
+        """Render the score matrix slice as a heatmap-style figure.
+
+        Cells are shaded by score (assumed in [0, 1]) using the given colormap.
+        No sentinel row/column, ellipsis, or move arrows are drawn. Column
+        headers for candidate frames matched on the optimal alignment path are
+        rendered in bold.
+
+        Parameters
+        ----------
+        start_frame, end_frame:
+            Inclusive frame range (uses the same episode selection as ``get_matrix_slices``).
+        decimals:
+            Number of decimal places for cell values.
+        cell_size:
+            Cell fill size within its unit square (``0 < cell_size <= 1``).
+        cmap:
+            Matplotlib colormap name; defaults to ``Reds``.
+
+        Returns
+        -------
+        plt.Axes
+        """
+        score_slice, _ = self.get_matrix_slices(start_frame, end_frame)
+        if score_slice.empty:
+            raise ValueError(f"No score slice available for frames [{start_frame}, {end_frame}].")
+
+        n_rows, n_cols = score_slice.shape
+        episode_id, _, frame_cols_full = self._slice_episode(start_frame, end_frame)
+
+        if ax is None:
+            # Match plot_dp_table figure width: it has a sentinel column plus an
+            # optional ellipsis column on top of the actual frame columns.
+            full_dp = self.dp_mats[episode_id]
+            col_offset = 1 if frame_cols_full[0] != full_dp.columns[1] else 0
+            fig_w = max(6.0, 0.6 * (n_cols + 1 + col_offset + 3))
+            fig_h = max(3.0, 0.42 * (n_rows + 2))
+            _, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+        cmap_obj = plt.get_cmap(cmap)
+        norm = plt.Normalize(vmin=0.4, vmax=1.0)
+        pad = (1 - cell_size) / 2
+
+        for r in range(n_rows):
+            for c in range(n_cols):
+                score = float(score_slice.iat[r, c])
+                ax.add_patch(
+                    Rectangle(
+                        (c + pad, -r - 1 + pad),
+                        cell_size,
+                        cell_size,
+                        facecolor=cmap_obj(norm(score)),
+                        edgecolor="black",
+                        lw=0.5,
+                        zorder=1,
+                    )
+                )
+                text_color = "white" if score > 0.7 else "black"
+                ax.text(
+                    c + 0.5,
+                    -r - 0.5,
+                    f"{score:.{decimals}f}".lstrip("0"),
+                    ha="center",
+                    va="center",
+                    fontsize=12,
+                    color=text_color,
+                    zorder=3,
+                )
+
+        # Column headers
+        for c in range(n_cols):
+            frame_id = score_slice.columns[c]
+            ax.text(
+                c + 0.5,
+                0.25,
+                str(frame_id),
+                ha="center",
+                va="bottom",
+                fontsize=13,
+                rotation=45,
+                clip_on=False,
+            )
+
+        # Row headers: "{player_abbrev} {spadl_type} ({event_idx})".
+        for r in range(n_rows):
+            event_idx = score_slice.index[r]
+            row = self.synced_events.loc[event_idx]
+            player_id = row.get("player_id", "")
+            if isinstance(player_id, str) and "_" in player_id:
+                team, num = player_id.split("_", 1)
+                player_short = f"{team[0].upper()}{num}"
+            else:
+                player_short = str(player_id)
+            ax.text(
+                -0.2,
+                -r - 0.5,
+                f"{player_short} {row['spadl_type']} ({event_idx})",
+                ha="right",
+                va="center",
+                fontsize=13,
+                clip_on=False,
+            )
+
+        ax.set_aspect("equal")
+        ax.set_xlim(-2.6, n_cols + 0.2)
+        ax.set_ylim(-n_rows - 0.5, 1.5)
+        ax.axis("off")
+
+        sm = plt.cm.ScalarMappable(cmap=cmap_obj, norm=norm)
+        sm.set_array([])
+        cbar = ax.figure.colorbar(sm, ax=ax, fraction=0.03, pad=0.02, shrink=0.8)
+        cbar.ax.tick_params(labelsize=13)
+        return ax
+
     def plot_dp_table(
         self,
         start_frame: int,
@@ -1167,6 +1289,12 @@ class ELASTIC_NW:
         """
         episode_id, event_rows, frame_cols = self._slice_episode(start_frame, end_frame)
         if episode_id is None or not event_rows or not frame_cols:
+            raise ValueError(f"No DP slice available for frames [{start_frame}, {end_frame}].")
+
+        # Drop candidate-frame columns that score zero against every event in the slice
+        score_mat = self.score_mats[episode_id]
+        frame_cols = [f for f in frame_cols if (score_mat.loc[event_rows, f] != 0).any()]
+        if not frame_cols:
             raise ValueError(f"No DP slice available for frames [{start_frame}, {end_frame}].")
 
         dp_mat = self.dp_mats[episode_id]
