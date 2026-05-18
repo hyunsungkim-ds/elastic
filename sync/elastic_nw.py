@@ -988,7 +988,7 @@ class ELASTIC_NW:
         plt.rcParams["font.size"] = 15
 
         if ax is None:
-            _, ax = plt.subplots(figsize=(12, 4))
+            _, ax = plt.subplots(figsize=(8, 4))
 
         # tracking window
         mask = (self.tracking["frame_id"] >= start_frame) & (self.tracking["frame_id"] <= end_frame)
@@ -1012,23 +1012,47 @@ class ELASTIC_NW:
 
         for pid in target_players:
             grp = merged[merged["player_id"] == pid].set_index("frame_id").sort_index()
-            ax.plot(grp.index, grp["player_dist"], color=player_colors[pid], label=pid)
+            ax.plot(grp.index, grp["player_dist"], color=player_colors[pid], alpha=0.7, label=pid)
 
         # ball_accel (scaled by 1/5 to match player_dist range)
-        ax.plot(ball.index, ball["accel_v"] / 5, color="darkgray", linewidth=1.5, label="ball_accel")
+        ax.plot(ball.index, ball["accel_v"] / 5, color="darkgray", label="ball_accel")
 
         target_cands = self.cand_frames[
             (self.cand_frames["frame_id"].between(start_frame, end_frame))
             & (self.cand_frames["player_id"].isin(target_players))
         ]
         for _, row in target_cands.iterrows():
-            ax.axvline(row["frame_id"], color=player_colors[row["player_id"]], linestyle="--")
+            ax.axvline(row["frame_id"], color=player_colors[row["player_id"]], linestyle="--", alpha=0.7)
 
-        for f in target_events["frame_id"].dropna().unique():
-            ax.axvline(f, color="black", linestyle="-")
+        for _, row in target_events.dropna(subset=["frame_id"]).iterrows():
+            fid = row["frame_id"]
+            color = player_colors[row["player_id"]]
+            ax.axvline(fid, color=color, linestyle="-")
 
+            if row["spadl_type"] in set(config.PASS_LIKE_OPEN + config.SET_PIECE):
+                letter = "O"
+            elif row["spadl_type"] in set(config.INCOMING):
+                letter = "I"
+            else:
+                letter = "M"
+            ax.scatter([fid], [25], s=300, c=color, zorder=5, clip_on=False)
+            ax.text(
+                fid,
+                24.9,
+                letter,
+                ha="center",
+                va="center",
+                color="white",
+                fontsize=12,
+                fontweight="bold",
+                zorder=6,
+                clip_on=False,
+            )
+
+        ax.set_xlim(start_frame, end_frame)
         ax.set_ylim(0, 25)
-        ax.set_xlabel("frame_id")
+        ax.set_xlabel("Frame ID")
+        ax.set_ylabel("Player-ball distance (m)")
         ax.legend(loc="upper right", fontsize=12)
         ax.yaxis.grid(True)
         ax.xaxis.grid(False)
