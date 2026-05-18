@@ -1,6 +1,6 @@
 import os
 import sys
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 if not os.getcwd() in sys.path:
     sys.path.append(os.getcwd())
@@ -70,6 +70,8 @@ class ELASTIC_NW:
             self.events = ELASTIC_NW.insert_goal_events(self.events)
 
         self.cand_frames: pd.DataFrame = None
+        self.score_mats: Dict[int, pd.DataFrame] = {}
+        self.dp_mats: Dict[int, pd.DataFrame] = {}
         self.synced_events: pd.DataFrame = None
 
     def _infer_out_player_id(self, event: pd.Series) -> str:
@@ -811,9 +813,9 @@ class ELASTIC_NW:
             frame_pos = [frame_pos_map[frame_id] for frame_id in player_scores.index]
             score_mat[i, frame_pos] = player_scores.to_numpy()
 
-        gap_event = 10.0
+        gap_event = 0.1
         gap_frame = 0.0
-        repeat_threshold = 50.0
+        repeat_threshold = 0.5
 
         event_players = ep_events["player_id"].to_numpy()
         event_types = ep_events["spadl_type"].to_numpy()
@@ -837,13 +839,13 @@ class ELASTIC_NW:
                 if score_mat[i - 1, j - 1] >= repeat_threshold:
                     if event_players[i - 1] == event_players[i - 2]:
                         if event_types[i - 1] in [event_types[i - 2], "bad_touch"]:
-                            repeat_penalty = -30.0
+                            repeat_penalty = -0.3
                         elif event_types[i - 1] == "ball_recovery":
-                            repeat_penalty = -10.0
+                            repeat_penalty = -0.1
                         else:
                             repeat_penalty = 0.0
                     else:
-                        repeat_penalty = -10.0
+                        repeat_penalty = -0.1
                     up_match = dp_mat[i - 1, j] + score_mat[i - 1, j - 1] + repeat_penalty
                 if diag >= up_gap and diag >= left_gap and diag >= up_match:
                     dp_mat[i, j] = diag
@@ -943,8 +945,12 @@ class ELASTIC_NW:
             self.cand_frames = self.calculate_takeon_features(self.cand_frames)
 
         matches = []
+        self.score_mats = {}
+        self.dp_mats = {}
         for episode_id in tqdm(self.frames["episode_id"].unique(), desc="Needleman-Wunsch alignment"):
-            episode_matches, _, _, _ = self.align_episode(episode_id, events)
+            episode_matches, score_mat, dp_mat, _ = self.align_episode(episode_id, events)
+            self.score_mats[episode_id] = score_mat
+            self.dp_mats[episode_id] = dp_mat
             if not episode_matches.empty:
                 matches.append(episode_matches)
 
@@ -952,11 +958,14 @@ class ELASTIC_NW:
             aligned = pd.concat(matches).sort_index()
             events.loc[aligned.index, "frame_id"] = aligned["frame_id"].round()
             events.loc[aligned.index, "score"] = aligned["score"]
-            events.loc[events["score"] < 30, "frame_id"] = np.nan
+            events.loc[events["score"] < 0.3, "frame_id"] = np.nan
         else:
             aligned = pd.DataFrame(columns=config.ALIGNED_COLS)
 
         events["synced_ts"] = events["frame_id"].map(self.frames["timestamp"].to_dict())
+
+        # Preserve original-indexed events so score_mat/dp_mat row indices line up.
+        self.synced_events = events.copy()
 
         if simplify_one_touch:
             control_mask = events["spadl_type"] == "control"
@@ -964,6 +973,47 @@ class ELASTIC_NW:
             events = events.loc[~(control_mask & one_touch_mask)].reset_index(drop=True)
 
         return events
+
+    def get_matrix_slices(self, start_frame: int, end_frame: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Return score_mat and dp_mat slices for the episode covering ``start_frame``.
+
+        Parameters
+        ----------
+        start_frame, end_frame:
+            Inclusive frame range.
+
+        Returns
+        -------
+        score_mat, dp_mat:
+            Slices for the selected episode. Empty DataFrames if no episode
+            matches or the range has no overlap.
+        """
+        assert self.synced_events is not None, "Call run() first to populate matrices."
+
+        # Pick the episode containing start_frame, else the next one starting after it.
+        episode_starts = {eid: int(mat.columns.min()) for eid, mat in self.score_mats.items() if len(mat.columns)}
+        episode_ends = {eid: int(mat.columns.max()) for eid, mat in self.score_mats.items() if len(mat.columns)}
+
+        episode_id = next((eid for eid, s in episode_starts.items() if s <= start_frame <= episode_ends[eid]), None)
+        if episode_id is None:
+            after = [(s, eid) for eid, s in episode_starts.items() if s >= start_frame]
+            if not after:
+                return pd.DataFrame(), pd.DataFrame()
+            episode_id = min(after)[1]
+
+        score_mat = self.score_mats[episode_id]
+        dp_mat = self.dp_mats[episode_id]
+
+        target_indices = self.synced_events[self.synced_events["frame_id"].between(start_frame, end_frame)].index
+        event_rows = [i for i in score_mat.index if i in target_indices]
+        frame_cols = [f for f in score_mat.columns if start_frame <= f <= end_frame and (score_mat[f] != 0).any()]
+
+        if not event_rows or not frame_cols:
+            return pd.DataFrame(), pd.DataFrame()
+        else:
+            score_slice = score_mat.loc[event_rows, frame_cols]
+            dp_slice = dp_mat.loc[event_rows, frame_cols]
+            return score_slice, dp_slice
 
     def plot_features(self, start_frame: int, end_frame: int, ax: plt.Axes = None) -> plt.Axes:
         """Plot player_dist and ball_accel for a frame range.
@@ -1002,9 +1052,13 @@ class ELASTIC_NW:
         merged = players.join(ball_xy, on="frame_id", how="inner")
         merged["player_dist"] = np.sqrt((merged["x"] - merged["ball_x"]) ** 2 + (merged["y"] - merged["ball_y"]) ** 2)
 
-        target_events = self.synced_events[(self.synced_events["frame_id"].between(start_frame, end_frame))]
-        target_players = target_events["player_id"].unique().tolist()
+        # Drop one-touch control duplicates so I/O markers don't overlap at the same frame
+        target_events = self.synced_events[self.synced_events["frame_id"].between(start_frame, end_frame)]
+        control_mask = target_events["spadl_type"] == "control"
+        one_touch_mask = target_events["frame_id"].shift(-1) == target_events["frame_id"]
+        target_events = target_events.loc[~(control_mask & one_touch_mask)]
 
+        target_players = target_events["player_id"].unique().tolist()
         color_cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
         player_colors: dict[str, str] = {}
         for i, pid in enumerate(target_players):

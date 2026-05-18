@@ -62,18 +62,18 @@ def nw_score_major(features: pd.Series | pd.DataFrame, player_id: str, incoming:
             return scores
 
         features = features.loc[mask]
-        player_dist_score = 30 * dist_func(features["player_dist"].to_numpy())
-        player_dist_slope_score = 20 * slope_func(features[slope_col].to_numpy())
-        kick_dist_score = 30 * kick_dist_func(features[kick_dist_col].to_numpy())
-        ball_accel_score = 20 * ball_accel_func(features["ball_accel"].to_numpy())
+        player_dist_score = 0.3 * dist_func(features["player_dist"].to_numpy())
+        player_dist_slope_score = 0.2 * slope_func(features[slope_col].to_numpy())
+        kick_dist_score = 0.3 * kick_dist_func(features[kick_dist_col].to_numpy())
+        ball_accel_score = 0.2 * ball_accel_func(features["ball_accel"].to_numpy())
         scores[mask.to_numpy()] = player_dist_score + player_dist_slope_score + kick_dist_score + ball_accel_score
         return scores
 
     elif features["player_id"] == player_id:  # isinstance(features, pd.Series)
-        player_dist_score = 30 * dist_func(features["player_dist"])
-        player_dist_slope_score = 20 * slope_func(features[slope_col])
-        kick_dist_score = 30 * kick_dist_func(features[kick_dist_col])
-        ball_accel_score = 20 * ball_accel_func(features["ball_accel"])
+        player_dist_score = 0.3 * dist_func(features["player_dist"])
+        player_dist_slope_score = 0.2 * slope_func(features[slope_col])
+        kick_dist_score = 0.3 * kick_dist_func(features[kick_dist_col])
+        ball_accel_score = 0.2 * ball_accel_func(features["ball_accel"])
         return player_dist_score + player_dist_slope_score + kick_dist_score + ball_accel_score
 
     else:
@@ -93,18 +93,18 @@ def nw_score_minor(features: pd.Series | pd.DataFrame, player_id: str, incoming:
             return scores
 
         features = features.loc[mask]
-        ball_accel_score = 25 * ball_accel_func(features["ball_accel"].to_numpy())
-        player_dist_score = 25 * player_dist_func(features["player_dist"].to_numpy())
-        oppo_dist_score = 25 * player_dist_func(features["oppo_dist"].to_numpy())
-        kick_dist_score = 25 * kick_dist_func(features[kick_dist_col].to_numpy())
+        ball_accel_score = 0.25 * ball_accel_func(features["ball_accel"].to_numpy())
+        player_dist_score = 0.25 * player_dist_func(features["player_dist"].to_numpy())
+        oppo_dist_score = 0.25 * player_dist_func(features["oppo_dist"].to_numpy())
+        kick_dist_score = 0.25 * kick_dist_func(features[kick_dist_col].to_numpy())
         scores[mask.to_numpy()] = ball_accel_score + player_dist_score + oppo_dist_score + kick_dist_score
         return scores
 
     elif features["player_id"] == player_id:  # isinstance(features, pd.Series)
-        ball_accel_score = 25 * ball_accel_func(features["ball_accel"])
-        player_dist_score = 25 * player_dist_func(features["player_dist"])
-        oppo_dist_score = 25 * player_dist_func(features["oppo_dist"])
-        kick_dist_score = 25 * kick_dist_func(features[kick_dist_col])
+        ball_accel_score = 0.25 * ball_accel_func(features["ball_accel"])
+        player_dist_score = 0.25 * player_dist_func(features["player_dist"])
+        oppo_dist_score = 0.25 * player_dist_func(features["oppo_dist"])
+        kick_dist_score = 0.25 * kick_dist_func(features[kick_dist_col])
         return ball_accel_score + player_dist_score + oppo_dist_score + kick_dist_score
 
     else:
@@ -119,53 +119,53 @@ def nw_score_takeon(features: pd.DataFrame, player_id: str, incoming: bool = Fal
 
     f = features.loc[mask]
     scores[mask.to_numpy()] = (
-        20 * ball_accel_func(f["ball_accel"].to_numpy() * 2)
-        + 20 * player_speed_func(f["max_speed"].fillna(0).to_numpy())
-        # + 20 * player_speed_func(f["delta_speed"].fillna(0).to_numpy() * 2)
-        + 20 * player_dist_func(f["oppo_dist"].fillna(10).to_numpy() - 3)
-        + 40 * angle_change_func(f["angle_change"].fillna(1).to_numpy())
+        0.20 * ball_accel_func(f["ball_accel"].to_numpy() * 2)
+        + 0.20 * player_speed_func(f["max_speed"].fillna(0).to_numpy())
+        # + 0.20 * player_speed_func(f["delta_speed"].fillna(0).to_numpy() * 2)
+        + 0.20 * player_dist_func(f["oppo_dist"].fillna(10).to_numpy() - 3)
+        + 0.40 * angle_change_func(f["angle_change"].fillna(1).to_numpy())
     )
     return scores
 
 
 def greedy_score_major(features: pd.DataFrame) -> np.ndarray:
-    ball_accel_score = 25 * ball_accel_func(features["ball_accel"].values)
-    player_dist_score = 25 * player_dist_func(features["player_dist"].values)
-    kick_dist_score = 25 * kick_dist_func(features["kick_dist"].values)
-    frame_delay_score = 25 * frame_delay_func(features["frame_delay"].values)
+    ball_accel_score = 0.25 * ball_accel_func(features["ball_accel"].values)
+    player_dist_score = 0.25 * player_dist_func(features["player_dist"].values)
+    kick_dist_score = 0.25 * kick_dist_func(features["kick_dist"].values)
+    frame_delay_score = 0.25 * frame_delay_func(features["frame_delay"].values)
     return ball_accel_score + player_dist_score + kick_dist_score + frame_delay_score
 
 
 def greedy_score_tackle(features: pd.DataFrame) -> np.ndarray:
-    ball_accel_score = 20 * ball_accel_func(features["ball_accel"].values)
-    player_dist_score = 20 * player_dist_func(features["player_dist"].values)
-    oppo_dist_score = 20 * player_dist_func(features["oppo_dist"].values)
-    kick_dist_score = 20 * kick_dist_func(features["kick_dist"].values)
-    frame_delay_score = 20 * frame_delay_func(features["frame_delay"].values)
+    ball_accel_score = 0.20 * ball_accel_func(features["ball_accel"].values)
+    player_dist_score = 0.20 * player_dist_func(features["player_dist"].values)
+    oppo_dist_score = 0.20 * player_dist_func(features["oppo_dist"].values)
+    kick_dist_score = 0.20 * kick_dist_func(features["kick_dist"].values)
+    frame_delay_score = 0.20 * frame_delay_func(features["frame_delay"].values)
     return ball_accel_score + player_dist_score + oppo_dist_score + kick_dist_score + frame_delay_score
 
 
 def greedy_score_takeon(features: pd.DataFrame) -> np.ndarray:
-    ball_accel_score = 20 * ball_accel_func(features["ball_accel"].values * 2)
-    max_speed_score = 20 * player_speed_func(features["max_speed"].values)
-    delta_speed_score = 20 * player_speed_func(features["delta_speed"].values * 2)
-    oppo_dist_score = 20 * player_dist_func(features["oppo_dist"].values - 3)
-    angle_change_score = 20 * angle_change_func(features["angle_change"].values)
+    ball_accel_score = 0.20 * ball_accel_func(features["ball_accel"].values * 2)
+    max_speed_score = 0.20 * player_speed_func(features["max_speed"].values)
+    delta_speed_score = 0.20 * player_speed_func(features["delta_speed"].values * 2)
+    oppo_dist_score = 0.20 * player_dist_func(features["oppo_dist"].values - 3)
+    angle_change_score = 0.20 * angle_change_func(features["angle_change"].values)
     return ball_accel_score + max_speed_score + delta_speed_score + oppo_dist_score + angle_change_score
 
 
 def greedy_score_dispossessed(features: pd.DataFrame) -> np.ndarray:
-    ball_accel_score = 100 / 3 * ball_accel_func(features["ball_accel"].values)
-    player_dist_score = 100 / 3 * player_dist_func(features["player_dist"].values)
-    kick_dist_score = 100 / 3 * kick_dist_func(features["kick_dist"].values)
+    ball_accel_score = 1 / 3 * ball_accel_func(features["ball_accel"].values)
+    player_dist_score = 1 / 3 * player_dist_func(features["player_dist"].values)
+    kick_dist_score = 1 / 3 * kick_dist_func(features["kick_dist"].values)
     return ball_accel_score + player_dist_score + kick_dist_score
 
 
 def greedy_score_receive(features: pd.DataFrame) -> np.ndarray:
-    ball_accel_score = 25 * ball_accel_func(features["ball_accel"].values)
-    closest_dist_score = 25 * player_dist_func(features["closest_dist"].values)
-    next_player_dist_score = 25 * player_dist_func(features["next_player_dist"].values)
-    kick_dist_score = 25 * kick_dist_func(features["kick_dist"].values)
+    ball_accel_score = 0.25 * ball_accel_func(features["ball_accel"].values)
+    closest_dist_score = 0.25 * player_dist_func(features["closest_dist"].values)
+    next_player_dist_score = 0.25 * player_dist_func(features["next_player_dist"].values)
+    kick_dist_score = 0.25 * kick_dist_func(features["kick_dist"].values)
     return ball_accel_score + closest_dist_score + next_player_dist_score + kick_dist_score
 
 
@@ -175,7 +175,7 @@ etsy_dist_func = linear_scoring_func(0, max_dist, increasing=False)
 
 
 def etsy_score(features: pd.DataFrame) -> np.ndarray:
-    player_ball_dist_score = 100 / 3 * etsy_dist_func(features["player_ball_dist"].values)
-    player_event_dist_score = 100 / 3 * etsy_dist_func(features["player_event_dist"].values)
-    ball_event_dist_score = 100 / 3 * etsy_dist_func(features["ball_event_dist"].values)
+    player_ball_dist_score = 1 / 3 * etsy_dist_func(features["player_ball_dist"].values)
+    player_event_dist_score = 1 / 3 * etsy_dist_func(features["player_event_dist"].values)
+    ball_event_dist_score = 1 / 3 * etsy_dist_func(features["ball_event_dist"].values)
     return player_ball_dist_score + player_event_dist_score + ball_event_dist_score
