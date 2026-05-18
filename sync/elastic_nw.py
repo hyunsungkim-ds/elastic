@@ -8,6 +8,7 @@ if not os.getcwd() in sys.path:
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.patches import Polygon, Rectangle
 from scipy.signal import find_peaks
 from tqdm import tqdm
 
@@ -72,6 +73,8 @@ class ELASTIC_NW:
         self.cand_frames: pd.DataFrame = None
         self.score_mats: Dict[int, pd.DataFrame] = {}
         self.dp_mats: Dict[int, pd.DataFrame] = {}
+        self.trace_mats: Dict[int, pd.DataFrame] = {}
+        self.paths: Dict[int, pd.DataFrame] = {}
         self.synced_events: pd.DataFrame = None
 
     def _infer_out_player_id(self, event: pd.Series) -> str:
@@ -731,7 +734,7 @@ class ELASTIC_NW:
         episode_id: int,
         events: pd.DataFrame = None,
         cand_frames: pd.DataFrame = None,
-    ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Align events and candidate frames for a single episode using Needleman-Wunsch algorithm.
         PASS_LIKE_OPEN, SET_PIECE, INCOMING, bad_touch, tackle, dispossessed, and optionally
@@ -745,6 +748,9 @@ class ELASTIC_NW:
             Event-frame score matrix (n_events x n_frames) with event indices as rows and frame_ids as columns.
         dp_mat : pd.DataFrame
             DP matrix (n_events+1 x n_frames+1) with -1 as the first index and column.
+        trace : pd.DataFrame
+            Backpointer matrix with the same shape/index/columns as dp_mat. Values:
+            0=diag-match, 1=down-gap, 2=right-gap, 3=down-match.
         path : pd.DataFrame
             Optimal alignment path with event/frame positions, ids, and timestamps.
         """
@@ -786,7 +792,12 @@ class ELASTIC_NW:
                 index=dp_idx,
                 columns=dp_cols,
             )
-            return aligned, score_mat, dp_mat, path
+            trace = pd.DataFrame(
+                np.zeros((len(dp_idx), len(dp_cols)), dtype=np.int8),
+                index=dp_idx,
+                columns=dp_cols,
+            )
+            return aligned, score_mat, dp_mat, trace, path
 
         n_events = len(ep_events)
         n_frames = len(ep_frame_ids)
@@ -924,7 +935,8 @@ class ELASTIC_NW:
         aligned = self._sync_fouls(aligned, ep_frames)
         aligned = self._adjust_dispossessed_frames(aligned)
         score_mat = pd.DataFrame(score_mat, index=ep_events.index, columns=ep_frame_ids)
-        return aligned, score_mat, dp_mat, path
+        trace = pd.DataFrame(trace, index=dp_idx, columns=dp_cols)
+        return aligned, score_mat, dp_mat, trace, path
 
     def run(self, events: pd.DataFrame = None, simplify_one_touch: bool = True) -> pd.DataFrame:
         """
@@ -947,10 +959,14 @@ class ELASTIC_NW:
         matches = []
         self.score_mats = {}
         self.dp_mats = {}
+        self.trace_mats = {}
+        self.paths = {}
         for episode_id in tqdm(self.frames["episode_id"].unique(), desc="Needleman-Wunsch alignment"):
-            episode_matches, score_mat, dp_mat, _ = self.align_episode(episode_id, events)
+            episode_matches, score_mat, dp_mat, trace, path = self.align_episode(episode_id, events)
             self.score_mats[episode_id] = score_mat
             self.dp_mats[episode_id] = dp_mat
+            self.trace_mats[episode_id] = trace
+            self.paths[episode_id] = path
             if not episode_matches.empty:
                 matches.append(episode_matches)
 
@@ -974,8 +990,36 @@ class ELASTIC_NW:
 
         return events
 
+    def _slice_episode(self, start_frame: int, end_frame: int) -> Tuple[int, list, list]:
+        """Pick the episode covering ``start_frame`` and return (episode_id, event_rows, frame_cols).
+
+        Episode selection: the one whose frame range includes ``start_frame``;
+        otherwise the next episode starting at or after ``start_frame``. Returns
+        ``(None, [], [])`` if no episode matches. ``frame_cols`` is NOT filtered
+        by zero scores — callers can drop them as needed.
+        """
+        assert self.synced_events is not None, "Call run() first to populate matrices."
+
+        episode_starts = {eid: int(mat.columns.min()) for eid, mat in self.score_mats.items() if len(mat.columns)}
+        episode_ends = {eid: int(mat.columns.max()) for eid, mat in self.score_mats.items() if len(mat.columns)}
+
+        episode_id = next((eid for eid, s in episode_starts.items() if s <= start_frame <= episode_ends[eid]), None)
+        if episode_id is None:
+            after = [(s, eid) for eid, s in episode_starts.items() if s >= start_frame]
+            if not after:
+                return None, [], []
+            episode_id = min(after)[1]
+
+        score_mat = self.score_mats[episode_id]
+        target_indices = self.synced_events[self.synced_events["frame_id"].between(start_frame, end_frame)].index
+        event_rows = [i for i in score_mat.index if i in target_indices]
+        frame_cols = [f for f in score_mat.columns if start_frame <= f <= end_frame]
+        return episode_id, event_rows, frame_cols
+
     def get_matrix_slices(self, start_frame: int, end_frame: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Return score_mat and dp_mat slices for the episode covering ``start_frame``.
+
+        All-zero score columns are dropped from both slices for compactness.
 
         Parameters
         ----------
@@ -988,32 +1032,17 @@ class ELASTIC_NW:
             Slices for the selected episode. Empty DataFrames if no episode
             matches or the range has no overlap.
         """
-        assert self.synced_events is not None, "Call run() first to populate matrices."
-
-        # Pick the episode containing start_frame, else the next one starting after it.
-        episode_starts = {eid: int(mat.columns.min()) for eid, mat in self.score_mats.items() if len(mat.columns)}
-        episode_ends = {eid: int(mat.columns.max()) for eid, mat in self.score_mats.items() if len(mat.columns)}
-
-        episode_id = next((eid for eid, s in episode_starts.items() if s <= start_frame <= episode_ends[eid]), None)
-        if episode_id is None:
-            after = [(s, eid) for eid, s in episode_starts.items() if s >= start_frame]
-            if not after:
-                return pd.DataFrame(), pd.DataFrame()
-            episode_id = min(after)[1]
+        episode_id, event_rows, frame_cols = self._slice_episode(start_frame, end_frame)
+        if episode_id is None or not event_rows or not frame_cols:
+            return pd.DataFrame(), pd.DataFrame()
 
         score_mat = self.score_mats[episode_id]
         dp_mat = self.dp_mats[episode_id]
+        frame_cols = [f for f in frame_cols if (score_mat[f] != 0).any()]
 
-        target_indices = self.synced_events[self.synced_events["frame_id"].between(start_frame, end_frame)].index
-        event_rows = [i for i in score_mat.index if i in target_indices]
-        frame_cols = [f for f in score_mat.columns if start_frame <= f <= end_frame and (score_mat[f] != 0).any()]
-
-        if not event_rows or not frame_cols:
+        if not frame_cols:
             return pd.DataFrame(), pd.DataFrame()
-        else:
-            score_slice = score_mat.loc[event_rows, frame_cols]
-            dp_slice = dp_mat.loc[event_rows, frame_cols]
-            return score_slice, dp_slice
+        return score_mat.loc[event_rows, frame_cols], dp_mat.loc[event_rows, frame_cols]
 
     def plot_features(self, start_frame: int, end_frame: int, ax: plt.Axes = None) -> plt.Axes:
         """Plot player_dist and ball_accel for a frame range.
@@ -1110,4 +1139,204 @@ class ELASTIC_NW:
         ax.legend(loc="upper right", fontsize=12)
         ax.yaxis.grid(True)
         ax.xaxis.grid(False)
+        return ax
+
+    def plot_dp_table(
+        self,
+        start_frame: int,
+        end_frame: int,
+        ax: plt.Axes = None,
+        decimals: int = 2,
+        cell_size: float = 0.9,
+    ) -> plt.Axes:
+        """Render the NW DP table slice.
+
+        Parameters
+        ----------
+        start_frame, end_frame:
+            Inclusive frame range. Episode selection follows ``get_matrix_slices``.
+        decimals:
+            Number of decimal places for cell values.
+        cell_size:
+            Cell fill size within its unit square (``0 < cell_size <= 1``).
+            Smaller values leave more whitespace between cells.
+
+        Returns
+        -------
+        plt.Axes
+        """
+        episode_id, event_rows, frame_cols = self._slice_episode(start_frame, end_frame)
+        if episode_id is None or not event_rows or not frame_cols:
+            raise ValueError(f"No DP slice available for frames [{start_frame}, {end_frame}].")
+
+        dp_mat = self.dp_mats[episode_id]
+        trace_mat = self.trace_mats[episode_id]
+        dp_slice = dp_mat.loc[[-1] + event_rows, [-1] + frame_cols]
+        trace_slice = trace_mat.loc[[-1] + event_rows, [-1] + frame_cols]
+        n_rows, n_cols = dp_slice.shape
+
+        # Walk the full-episode path forward to collect cells that the optimal
+        # alignment passes through, then map to slice (row_pos, col_pos).
+        on_path_cells = set()
+        if episode_id in self.paths:
+            slice_event_index = list(dp_slice.index)
+            slice_frame_cols = list(dp_slice.columns)
+            full_event_index = list(dp_mat.index)
+            full_frame_cols = list(dp_mat.columns)
+            i, j = 0, 0
+            for move in self.paths[episode_id]["move"]:
+                if move == "diag":
+                    i += 1
+                    j += 1
+                elif move == "repeat":
+                    i += 1
+                elif move == "up":
+                    i += 1
+                elif move == "left":
+                    j += 1
+                if i >= len(full_event_index) or j >= len(full_frame_cols):
+                    continue
+                row_label = full_event_index[i]
+                col_label = full_frame_cols[j]
+                if row_label in slice_event_index and col_label in slice_frame_cols:
+                    on_path_cells.add((slice_event_index.index(row_label), slice_frame_cols.index(col_label)))
+
+        if ax is None:
+            fig_w = max(7.0, 0.8 * (n_cols + 3))
+            fig_h = max(4.0, 0.55 * (n_rows + 2))
+            _, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+        # Insert an ellipsis row/column when the slice doesn't start from the
+        # episode's first event / first candidate frame. Non-sentinel cells are
+        # visually shifted by +1 along the affected axis so the ellipsis sits
+        # in its own empty strip between the sentinel and the first slice cell.
+        full_dp = self.dp_mats[episode_id]
+        col_offset = 1 if frame_cols[0] != full_dp.columns[1] else 0
+        row_offset = 1 if event_rows[0] != full_dp.index[1] else 0
+        total_cols_vis = n_cols + col_offset
+        total_rows_vis = n_rows + row_offset
+
+        # Cell backgrounds + values (text in lower-right so move shapes can
+        # occupy the upper/left region).
+        pad = (1 - cell_size) / 2
+        for r in range(n_rows):
+            y = r if r == 0 else r + row_offset
+            for c in range(n_cols):
+                x = c if c == 0 else c + col_offset
+                facecolor = "khaki" if (r, c) in on_path_cells else "white"
+                ax.add_patch(
+                    Rectangle(
+                        (x + pad, -y - 1 + pad),
+                        cell_size,
+                        cell_size,
+                        facecolor=facecolor,
+                        edgecolor="black",
+                        lw=0.5,
+                        zorder=1,
+                    )
+                )
+                ax.text(
+                    x + 1 - pad - 0.05,
+                    -y - 1 + pad + 0.05,
+                    f"{dp_slice.iat[r, c]:.{decimals}f}",
+                    ha="right",
+                    va="bottom",
+                    fontsize=9,
+                    zorder=3,
+                )
+
+        # Move indicator shapes: red = match, gray = gap.
+        #   diag-match (0)  -> upper-left square
+        #   down-gap (1)    -> gray top-half triangle pointing down
+        #   right-gap (2)   -> gray left-half triangle pointing right
+        #   down-match (3)  -> red top-half triangle pointing down
+        move_color = {0: "tab:red", 1: "gray", 2: "gray", 3: "tab:red"}
+        square_size = 0.45
+        for r in range(n_rows):
+            y = r if r == 0 else r + row_offset
+            for c in range(n_cols):
+                if r == 0 and c == 0:
+                    continue
+                if r == 0:
+                    move = 2
+                elif c == 0:
+                    move = 1
+                else:
+                    move = int(trace_slice.iat[r, c])
+                x = c if c == 0 else c + col_offset
+                color = move_color[move]
+                if move == 0:
+                    ax.add_patch(
+                        Rectangle(
+                            (x + pad, -y - pad - square_size),
+                            square_size,
+                            square_size,
+                            facecolor=color,
+                            edgecolor="none",
+                            zorder=2,
+                        )
+                    )
+                elif move in (1, 3):
+                    verts = [(x + pad, -y - pad), (x + 1 - pad, -y - pad), (x + 0.5, -y - 0.5)]
+                    ax.add_patch(Polygon(verts, closed=True, facecolor=color, edgecolor="none", zorder=2))
+                elif move == 2:
+                    verts = [(x + pad, -y - pad), (x + pad, -y - 1 + pad), (x + 0.5, -y - 0.5)]
+                    ax.add_patch(Polygon(verts, closed=True, facecolor=color, edgecolor="none", zorder=2))
+
+        # Ellipsis markers in the empty shifted-out strip (cell area only).
+        if col_offset:
+            for r in range(n_rows):
+                y = r if r == 0 else r + row_offset
+                ax.text(1.5, -y - 0.5, "⋯", ha="center", va="center", fontsize=16, zorder=3)
+        if row_offset:
+            for c in range(n_cols):
+                x = c if c == 0 else c + col_offset
+                ax.text(x + 0.5, -1.5, "⋮", ha="center", va="center", fontsize=16, zorder=3)
+        if col_offset and row_offset:
+            ax.text(1.5, -1.5, "⋱", ha="center", va="center", fontsize=16, zorder=3)
+
+        # Column headers (frame_id).
+        matched_frames = set()
+        if episode_id in self.paths:
+            path = self.paths[episode_id]
+            matched_frames = set(path.loc[path["move"].isin(["diag", "repeat"]), "frame_id"].dropna().astype(int))
+        for c in range(1, n_cols):
+            frame_id = dp_slice.columns[c]
+            ax.text(
+                c + col_offset + 0.5,
+                0.25,
+                str(frame_id),
+                ha="center",
+                va="bottom",
+                color="tab:red" if frame_id in matched_frames else "k",
+                fontsize=13,
+                rotation=45,
+                clip_on=False,
+                fontweight="bold" if frame_id in matched_frames else "normal",
+            )
+
+        # Row headers: "{player_abbrev} {spadl_type} ({event_idx})".
+        for r in range(1, n_rows):
+            event_idx = dp_slice.index[r]
+            row = self.synced_events.loc[event_idx]
+            player_id = row.get("player_id", "")
+            if isinstance(player_id, str) and "_" in player_id:
+                team, num = player_id.split("_", 1)
+                player_short = f"{team[0].upper()}{num}"
+            else:
+                player_short = str(player_id)
+            ax.text(
+                -0.2,
+                -(r + row_offset) - 0.5,
+                f"{player_short} {row['spadl_type']} ({event_idx})",
+                ha="right",
+                va="center",
+                fontsize=13,
+                clip_on=False,
+            )
+
+        ax.set_aspect("equal")
+        ax.set_xlim(-2.6, total_cols_vis + 0.2)
+        ax.set_ylim(-total_rows_vis - 0.5, 1.5)
+        ax.axis("off")
         return ax
