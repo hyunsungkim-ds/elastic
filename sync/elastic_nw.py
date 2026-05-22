@@ -1463,6 +1463,59 @@ class ELASTIC_NW:
                 clip_on=False,
             )
 
+        # Single-row legend below the matrix showing each move's shape + color.
+        legend_items = [
+            ("square", "tab:red", "diag-match"),
+            ("right_tri", "gray", "right-gap"),
+            ("down_tri", "gray", "down-gap"),
+            ("down_tri", "tab:red", "down-match"),
+            ("square", "khaki", "optimal path"),
+        ]
+        legend_y = -total_rows_vis - 1.4
+        shape_size = 0.6
+        legend_x_start = -3.5  # figure's left edge (= xlim left)
+        item_step = 3.3  # data units per legend item (shape + label + spacing)
+        # Shift shorter labels rightward to balance perceived spacing.
+        extra_offset = {1: 0.2, 2: -0.1, 3: -0.3}
+        legend_fontsize = 11
+        for i, (shape, color, label) in enumerate(legend_items):
+            cx = legend_x_start + i * item_step + extra_offset.get(i, 0.0)
+            if shape == "square":
+                ax.add_patch(
+                    Rectangle(
+                        (cx, legend_y),
+                        shape_size,
+                        shape_size,
+                        facecolor=color,
+                        edgecolor="none",
+                        zorder=3,
+                        clip_on=False,
+                    )
+                )
+            elif shape == "right_tri":
+                verts = [
+                    (cx, legend_y + shape_size),
+                    (cx, legend_y),
+                    (cx + shape_size, legend_y + shape_size / 2),
+                ]
+                ax.add_patch(Polygon(verts, closed=True, facecolor=color, edgecolor="none", zorder=3, clip_on=False))
+            elif shape == "down_tri":
+                verts = [
+                    (cx, legend_y + shape_size),
+                    (cx + shape_size, legend_y + shape_size),
+                    (cx + shape_size / 2, legend_y),
+                ]
+                ax.add_patch(Polygon(verts, closed=True, facecolor=color, edgecolor="none", zorder=3, clip_on=False))
+            ax.text(
+                cx + shape_size + 0.2,
+                legend_y + shape_size / 2,
+                label,
+                ha="left",
+                va="center",
+                fontsize=legend_fontsize,
+                clip_on=False,
+            )
+
         ax.set_aspect("equal")
         ax.set_xlim(-2.6, total_cols_vis + 0.2)
         ax.set_ylim(-total_rows_vis - 0.5, 1.5)
