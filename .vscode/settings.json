@@ -1,15 +1,11 @@
 {
     "jupyter.notebookFileRoot": "${workspaceFolder}",
-    "flake8.args": [
-        "--max-line-length=120",
-        "--ignore=E203,E402,F401,F841,W503,F403,F405"
-    ],
     "[python]": {
         "editor.defaultFormatter": "ms-python.black-formatter",
         "editor.formatOnSave": true,
         "editor.codeActionsOnSave": {
             "source.organizeImports": "explicit"
-        },
+        }
     },
     "black-formatter.args": [
         "--line-length",
