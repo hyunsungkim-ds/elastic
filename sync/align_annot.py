@@ -1,4 +1,17 @@
-"""Align per-annotator event CSVs into a single cross-rater table per match."""
+"""Align per-annotator event CSVs into a single cross-rater table per match.
+
+For each match in MATCH_IDS, reads ``{DATA_DIR}/{match_id}_{annotator}.csv`` from every
+annotator in ANNOTATORS and writes a merged ``{DATA_DIR}/{match_id}_aligned.csv``.
+
+Alignment rules:
+  - Two rows match iff they share KEY_COLS, their ``synced_ts`` is within
+    TS_DIFF_THRESHOLD_SEC (TS_DIFF_SYNCED_SEC when either side is marked ``synced_ts``),
+    and -- when either side carries a structural error -- their ``error_type`` is identical.
+  - Rows with NaN ``synced_ts`` are emitted as standalone splits (``error_type="ts_missing"``).
+  - When annotators disagree, ``find_forward`` looks up to LOOKAHEAD rows ahead within the
+    same period to resync; unmatched rows in between become implicit splits
+    (``error_type="attr_mismatch"`` unless they already carry a more specific error).
+"""
 
 import os
 import sys
@@ -50,25 +63,39 @@ def row_key(row):
 def match(row_a, row_b):
     if row_key(row_a) != row_key(row_b):
         return False
+
+    # If either side has a structural error (player_id, spadl_type, etc.),
+    # both must have the exact same error_type to merge
+    err_a, err_b = row_a["error_type"], row_b["error_type"]
+    a_struct = err_a in SPLIT_ERROR_TYPES if pd.notna(err_a) else False
+    b_struct = err_b in SPLIT_ERROR_TYPES if pd.notna(err_b) else False
+    if (a_struct or b_struct) and err_a != err_b:
+        return False
+
     ts_a = ts_to_sec(row_a["synced_ts"])
     ts_b = ts_to_sec(row_b["synced_ts"])
     if np.isinf(ts_a) or np.isinf(ts_b):
         return True
     threshold = TS_DIFF_THRESHOLD_SEC
-    if row_a["error_type"] == "synced_ts" or row_b["error_type"] == "synced_ts":
+    if err_a == "synced_ts" or err_b == "synced_ts":
         threshold = TS_DIFF_SYNCED_SEC
     return abs(ts_a - ts_b) <= threshold
 
 
 def make_merge_row(rows_by_ann):
     first = next(iter(rows_by_ann.values()))
-    has_synced_err = any(r["error_type"] == "synced_ts" for r in rows_by_ann.values())
+    error_types = [r["error_type"] for r in rows_by_ann.values()]
+    if "synced_ts" in error_types:
+        err = "synced_ts"
+    else:
+        unique_errs = {t for t in error_types if pd.notna(t)}
+        err = unique_errs.pop() if len(unique_errs) == 1 else np.nan
     rec = {
         "period_id": first["period_id"],
         "player_id": first["player_id"],
         "spadl_type": first["spadl_type"],
         "outcome": first["outcome"],
-        "error_type": "synced_ts" if has_synced_err else np.nan,
+        "error_type": err,
         "note": combine_notes({a: r["note"] for a, r in rows_by_ann.items()}),
     }
     for ann in ANNOTATORS:
@@ -77,7 +104,10 @@ def make_merge_row(rows_by_ann):
 
 
 def make_split_row(ann, row, implicit=False):
-    err = "attr_mismatch" if implicit else row["error_type"]
+    if implicit:
+        err = row["error_type"] if pd.notna(row["error_type"]) else "attr_mismatch"
+    else:
+        err = row["error_type"]
     rec = {
         "period_id": row["period_id"],
         "player_id": row["player_id"],
@@ -119,18 +149,7 @@ def align_annots(match_id):
     while any(in_range(a) for a in ANNOTATORS):
         active = [a for a in ANNOTATORS if in_range(a)]
 
-        # Step 1: explicit split error 우선 소진
         progressed = False
-        for a in active:
-            if row(a)["error_type"] in SPLIT_ERROR_TYPES:
-                records.append(make_split_row(a, row(a), implicit=False))
-                ptr[a] += 1
-                progressed = True
-                break
-        if progressed:
-            continue
-
-        # Step 1.5: ts=NaN row 단독 split
         for a in active:
             if pd.isna(row(a)["synced_ts"]):
                 rec = make_split_row(a, row(a), implicit=False)
@@ -167,7 +186,7 @@ def align_annots(match_id):
                     ptr[t] += 1
             continue
 
-        # active == 3
+        # active == 3: merge on unanimous match, otherwise resync the 2-vs-1 odd one via lookahead.
         pairs = [(a, b) for a, b in combinations(active, 2) if match(row(a), row(b))]
 
         if len(pairs) == 3:
