@@ -21,9 +21,9 @@ etsy_event_schema = DataFrameSchema(
         "utc_timestamp": Column(np.dtype("datetime64[ns]")),
         "player_id": Column(object),
         "spadl_type": Column(str, Check(lambda s: s.isin(config.SPADL_TYPES))),
-        "start_x": Column(float, Check(lambda s: (s >= 0) & (s <= config.PITCH_X))),
-        "start_y": Column(float, Check(lambda s: (s >= 0) & (s <= config.PITCH_Y))),
-        # "bodypart_id": Column(int, Check(lambda s: s.isin(range(len(config.SPADL_BODYPARTS))))),
+        "success": Column(bool),
+        "start_x": Column(float, nullable=True),
+        "start_y": Column(float, nullable=True),
     },
     index=Index(int),
 )

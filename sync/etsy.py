@@ -259,6 +259,8 @@ class ETSY:
             return cand_features.index[0], features, None
         else:
             cand_features["score"] = utils.etsy_score(cand_features)
+            if not cand_features["score"].notna().any():
+                return np.nan, features, cand_features
             return cand_features["score"].idxmax(), features, cand_features
 
     def _sync_period_events(self, period: int) -> None:
@@ -282,9 +284,13 @@ class ETSY:
                     self.matched_frames[i] = best_frame
                     self.last_matched_frame = best_frame
 
-    def run(self) -> None:
-        """
-        Applies the ETSY algorithm on the instantiated class.
+    def run(self) -> pd.DataFrame:
+        """Applies the ETSY algorithm and returns the synced events.
+
+        Returns a DataFrame with the input columns plus ``frame_id`` and
+        ``synced_ts``, mirroring the return contract of ``ELASTIC_NW.run`` /
+        ``ELASTIC_Greedy.run``. ETSY does not detect event ends, so no
+        ``receive_*`` columns are emitted.
         """
         kickoff_idx = 0
 
@@ -316,6 +322,7 @@ class ETSY:
 
         self.events["frame_id"] = self.matched_frames
         self.events["synced_ts"] = self.events["frame_id"].map(self.frames["timestamp"].to_dict())
+        return self.events
 
     def plot_window_features(self, event_idx: int, display_title: bool = True, save_path: str = None) -> pd.DataFrame:
         """
