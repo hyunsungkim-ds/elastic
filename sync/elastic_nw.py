@@ -141,7 +141,11 @@ class ELASTIC_NW:
 
     @staticmethod
     def insert_control_events(events: pd.DataFrame) -> None:
-        """Insert control (reception) events before pass-like or dispossessed events."""
+        """Insert control (reception) events before pass-like or dispossessed events.
+
+        Control events that precede fouls are not inserted here; they are detected
+        from tracking data after alignment by `_insert_foul_controls`.
+        """
         assert "episode_id" in events.columns
 
         prev_events = events.shift(1)
@@ -156,40 +160,6 @@ class ELASTIC_NW:
         control_events = events.loc[target_mask].copy()
         control_events["spadl_type"] = "control"
         control_events["success"] = True
-
-        # Also insert control before foul events (preceded by non-shot pass-like or set-piece)
-        foul_mask = (
-            (events["spadl_type"] == "foul")
-            & (prev_events["spadl_type"].isin(["pass", "cross"] + [t for t in config.SET_PIECE if t[:4] != "shot"]))
-            & (prev_events["episode_id"] == events["episode_id"])
-            & (prev_events["utc_timestamp"] < events["utc_timestamp"])
-        )
-        if foul_mask.any():
-            foul_controls = events.loc[foul_mask].copy()
-            foul_controls["spadl_type"] = "control"
-            foul_controls["success"] = True
-
-            for idx in foul_controls.index:
-                next_idx = idx + 1 if idx + 1 < len(events) else None
-                next_is_foul = next_idx is not None and events.at[next_idx, "spadl_type"] == "foul"
-                foul_player = events.at[idx, "player_id"]
-
-                if not next_is_foul:
-                    # Single foul: control player = foul player
-                    foul_controls.at[idx, "player_id"] = foul_player
-                else:
-                    # Double foul: pick the receiver based on prev pass success
-                    prev_player = prev_events.at[idx, "player_id"]
-                    next_foul_player = events.at[next_idx, "player_id"]
-                    if prev_events.at[idx, "success"]:
-                        # Receiver is on the same team as passer
-                        receiver = foul_player if prev_player[:4] == foul_player[:4] else next_foul_player
-                    else:
-                        # Receiver is on the opposite team
-                        receiver = foul_player if prev_player[:4] != foul_player[:4] else next_foul_player
-                    foul_controls.at[idx, "player_id"] = receiver
-
-            control_events = pd.concat([control_events, foul_controls], ignore_index=False)
 
         events = events.copy()
         events["order"] = events.index.astype(float)
@@ -700,6 +670,126 @@ class ELASTIC_NW:
 
         return aligned
 
+    def _insert_foul_controls(
+        self,
+        aligned: pd.DataFrame,
+        ep_frames: pd.DataFrame,
+        score_threshold: float = 0.3,
+    ) -> pd.DataFrame:
+        """For each foul (group) in this episode, search candidate frames between
+        the previous aligned event and the foul itself; insert a control row whose
+        (frame, player) maximizes nw_score_major(incoming=True) subject to
+        player-eligibility derived from the foul `success` flag:
+
+        - Single foul, success=False (fouler row): opposite-team players
+        - Single foul, success=True  (fouled row): the fouled player only
+        - Double foul: the row with success=True picks the fouled player
+
+        Skip insertion if the best score is below `score_threshold` (e.g. handball
+        fouls without direct ball contact).
+        """
+        if aligned.empty or ep_frames.empty:
+            return aligned
+
+        episode_id = aligned["episode_id"].iloc[0]
+        episode_events: pd.DataFrame = self.events[self.events["episode_id"] == episode_id]
+        if episode_events.empty or (episode_events["spadl_type"] != "foul").all():
+            return aligned
+
+        cands_sorted = ep_frames.sort_values("frame_id")
+
+        foul_pos = np.where(episode_events["spadl_type"].to_numpy() == "foul")[0]
+        if foul_pos.size == 0:
+            return aligned
+        group_ids = np.cumsum(np.diff(foul_pos, prepend=foul_pos[0] - 2) > 1)
+        foul_groups = [foul_pos[group_ids == g].tolist() for g in np.unique(group_ids)]
+
+        new_rows: List[Tuple[float, pd.Series]] = []
+        for group in foul_groups:
+            first_idx = episode_events.index[group[0]]
+            if first_idx not in aligned.index or pd.isna(aligned.at[first_idx, "frame_id"]):
+                continue
+            next_frame = aligned.at[first_idx, "frame_id"]
+
+            prev_frames = aligned.loc[aligned.index < first_idx, "frame_id"].dropna()
+            prev_frame = prev_frames.iloc[-1] if not prev_frames.empty else 0
+            if prev_frame >= next_frame:
+                continue
+
+            window = cands_sorted[(cands_sorted["frame_id"] > prev_frame) & (cands_sorted["frame_id"] < next_frame)]
+            if window.empty:
+                continue
+
+            # Eligible players from foul success semantics
+            group_rows = episode_events.iloc[group]
+            outcomes = group_rows["success"].tolist()
+            players = group_rows["player_id"].tolist()
+            fouled_players = [p for p, o in zip(players, outcomes) if o]
+
+            if len(group) == 1:
+                foul_player = players[0]
+                if outcomes[0]:
+                    eligible = [foul_player]
+                else:
+                    opp = "away" if foul_player[:4] == "home" else "home"
+                    eligible = [p for p in window["player_id"].unique() if isinstance(p, str) and p.startswith(opp)]
+            else:
+                if len(fouled_players) == 1:
+                    eligible = [fouled_players[0]]
+                else:
+                    # Fallback: union of opposite teams of all foul players
+                    teams = {p[:4] for p in players if isinstance(p, str)}
+                    opp_teams = {"home", "away"} - teams
+                    if not opp_teams:
+                        opp_teams = {"away" if "home" in teams else "home"}
+                    eligible = [p for p in window["player_id"].unique() if isinstance(p, str) and p[:4] in opp_teams]
+
+            if not eligible:
+                continue
+
+            best_score = -np.inf
+            best_player = None
+            best_frame = None
+            for player in eligible:
+                sub = window[window["player_id"] == player]
+                if sub.empty:
+                    continue
+                scores = utils.nw_score_major(sub, player, incoming=True)
+                if scores.size == 0:
+                    continue
+                i = int(np.argmax(scores))
+                if scores[i] > best_score:
+                    best_score = float(scores[i])
+                    best_player = player
+                    best_frame = sub.iloc[i]["frame_id"]
+
+            if best_player is None or best_score < score_threshold:
+                continue
+
+            foul_row = episode_events.iloc[group[0]]
+            new_row = pd.Series(
+                {
+                    "frame_id": best_frame,
+                    "period_id": foul_row["period_id"],
+                    "episode_id": episode_id,
+                    "timestamp": self.frames.at[best_frame, "timestamp"],
+                    "player_id": best_player,
+                    "spadl_type": "control",
+                    "success": True,
+                    "score": best_score,
+                }
+            )
+            new_rows.append((float(first_idx) - 0.5, new_row))
+
+        if new_rows:
+            new_df = pd.DataFrame(
+                [row for _, row in new_rows],
+                index=[i for i, _ in new_rows],
+            )[config.ALIGNED_COLS]
+            aligned = pd.concat([aligned, new_df]).sort_index()
+
+        return aligned
+
     @staticmethod
     def _adjust_dispossessed_frames(aligned: pd.DataFrame) -> pd.DataFrame:
         if len(aligned) < 2:
@@ -775,7 +865,7 @@ class ELASTIC_NW:
             cand_frames = self.calculate_takeon_features(cand_frames)
 
         minor_types = ["bad_touch", "tackle", "dispossessed", "take_on"]
-        event_types = config.PASS_LIKE_OPEN + config.SET_PIECE + config.INCOMING + minor_types + ["out", "goal"]
+        event_types = config.PASS_LIKE_OPEN + config.SET_PIECE + config.INCOMING + minor_types + config.EVENT_END
 
         ep_events = events[(events["episode_id"] == episode_id) & (events["spadl_type"].isin(event_types))]
         ep_frames = cand_frames[cand_frames["episode_id"] == episode_id]
@@ -807,7 +897,9 @@ class ELASTIC_NW:
         for i, event_idx in enumerate(ep_events.index):
             event_player = ep_events.at[event_idx, "player_id"]
             event_type = ep_events.at[event_idx, "spadl_type"]
-            is_incoming = event_type in config.INCOMING + ["bad_touch", "tackle"]
+            # "control" was historically in config.INCOMING; preserve the
+            # is_incoming=True behavior even though it now lives in EVENT_END.
+            is_incoming = event_type in config.INCOMING + ["bad_touch", "tackle", "control"]
             if event_type == "tackle":
                 score_fn = utils.nw_score_minor
             elif event_type == "dispossessed":
@@ -933,6 +1025,7 @@ class ELASTIC_NW:
 
         aligned = pd.concat([events.loc[matches.index], matches], axis=1)[config.ALIGNED_COLS]
         aligned = self._sync_fouls(aligned, ep_frames)
+        aligned = self._insert_foul_controls(aligned, ep_frames)
         aligned = self._adjust_dispossessed_frames(aligned)
         score_mat = pd.DataFrame(score_mat, index=ep_events.index, columns=ep_frame_ids)
         trace = pd.DataFrame(trace, index=dp_idx, columns=dp_cols)
@@ -972,6 +1065,22 @@ class ELASTIC_NW:
 
         if len(matches) > 0:
             aligned = pd.concat(matches).sort_index()
+
+            # Foul-precede control rows synthesized by `_insert_foul_controls`
+            # appear in `aligned` with fractional indices not present in `events`.
+            # Materialize them as new rows so downstream consumers (collapse_events,
+            # simplify_one_touch, evaluation) see consistent state.
+            new_idx = aligned.index.difference(events.index)
+            if len(new_idx) > 0:
+                new_rows = aligned.loc[new_idx].copy()
+                for col in events.columns:
+                    if col not in new_rows.columns:
+                        new_rows[col] = np.nan
+                if "utc_timestamp" in events.columns:
+                    new_rows["utc_timestamp"] = new_rows["frame_id"].map(self.frames["utc_timestamp"])
+                new_rows = new_rows.reindex(columns=events.columns)
+                events = pd.concat([events, new_rows]).sort_index()
+
             events.loc[aligned.index, "frame_id"] = aligned["frame_id"].round()
             events.loc[aligned.index, "score"] = aligned["score"]
             events.loc[events["score"] < 0.3, "frame_id"] = np.nan
@@ -1044,7 +1153,13 @@ class ELASTIC_NW:
             return pd.DataFrame(), pd.DataFrame()
         return score_mat.loc[event_rows, frame_cols], dp_mat.loc[event_rows, frame_cols]
 
-    def plot_features(self, start_frame: int, end_frame: int, ax: plt.Axes = None) -> plt.Axes:
+    def plot_features(
+        self,
+        start_frame: int,
+        end_frame: int,
+        ax: plt.Axes = None,
+        save_path: str = None,
+    ) -> plt.Axes:
         """Plot player_dist and ball_accel for a frame range.
 
         Parameters
@@ -1098,27 +1213,28 @@ class ELASTIC_NW:
             ax.plot(grp.index, grp["player_dist"], color=player_colors[pid], alpha=0.7, label=pid)
 
         # ball_accel (scaled by 1/5 to match player_dist range)
-        ax.plot(ball.index, ball["accel_v"] / 5, color="darkgray", label="ball_accel")
+        # ax.plot(ball.index, ball["accel_v"] / 5, color="darkgray", label="ball_accel")
 
         target_cands = self.cand_frames[
             (self.cand_frames["frame_id"].between(start_frame, end_frame))
             & (self.cand_frames["player_id"].isin(target_players))
         ]
         for _, row in target_cands.iterrows():
-            ax.axvline(row["frame_id"], color=player_colors[row["player_id"]], linestyle="--", alpha=0.7)
+            # ax.axvline(row["frame_id"], color=player_colors[row["player_id"]], linestyle="--", alpha=0.7)
+            ax.axvline(row["frame_id"], color="k", linestyle="--", alpha=0.7)
 
         for _, row in target_events.dropna(subset=["frame_id"]).iterrows():
             fid = row["frame_id"]
             color = player_colors[row["player_id"]]
-            ax.axvline(fid, color=color, linestyle="-")
+            ax.axvline(fid, color="tab:red", linestyle="-")
 
             if row["spadl_type"] in set(config.PASS_LIKE_OPEN + config.SET_PIECE):
-                letter = "O"
-            elif row["spadl_type"] in set(config.INCOMING):
-                letter = "I"
+                letter = "P"
+            elif row["spadl_type"] in set(config.INCOMING + ["control"]):
+                letter = "C"
             else:
                 letter = "M"
-            ax.scatter([fid], [25], s=300, c=color, zorder=5, clip_on=False)
+            ax.scatter([fid], [25], s=300, c="tab:red", zorder=5, clip_on=False)
             ax.text(
                 fid,
                 24.9,
@@ -1139,6 +1255,8 @@ class ELASTIC_NW:
         ax.legend(loc="upper right", fontsize=12)
         ax.yaxis.grid(True)
         ax.xaxis.grid(False)
+        if save_path is not None:
+            ax.figure.savefig(save_path, bbox_inches="tight")
         return ax
 
     def plot_score_matrix(
@@ -1149,6 +1267,7 @@ class ELASTIC_NW:
         decimals: int = 2,
         cell_size: float = 0.9,
         cmap: str = "Reds",
+        save_path: str = None,
     ) -> plt.Axes:
         """Render the score matrix slice as a heatmap-style figure.
 
@@ -1261,6 +1380,8 @@ class ELASTIC_NW:
         sm.set_array([])
         cbar = ax.figure.colorbar(sm, ax=ax, fraction=0.03, pad=0.02, shrink=0.8)
         cbar.ax.tick_params(labelsize=13)
+        if save_path is not None:
+            ax.figure.savefig(save_path, bbox_inches="tight")
         return ax
 
     def plot_dp_table(
@@ -1270,6 +1391,7 @@ class ELASTIC_NW:
         ax: plt.Axes = None,
         decimals: int = 2,
         cell_size: float = 0.9,
+        save_path: str = None,
     ) -> plt.Axes:
         """Render the NW DP table slice.
 
@@ -1520,4 +1642,6 @@ class ELASTIC_NW:
         ax.set_xlim(-2.6, total_cols_vis + 0.2)
         ax.set_ylim(-total_rows_vis - 0.5, 1.5)
         ax.axis("off")
+        if save_path is not None:
+            ax.figure.savefig(save_path, bbox_inches="tight")
         return ax
