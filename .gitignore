@@ -1,8 +1,9 @@
 # Data and video files
-animations/
-data/
 private/
-.claude/plans/
+data/
+animations/
+docs/*.pdf
+.claude/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
