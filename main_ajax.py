@@ -10,7 +10,7 @@ import pandas as pd
 from pandera.errors import SchemaError
 
 from sync import config, elastic_greedy, elastic_nw, unsynced
-from tools.evaluate import collapse_events
+from sync.utils import collapse_events
 from tools.stats_perform_data import StatsPerformData, find_spadl_event_types
 
 if __name__ == "__main__":
