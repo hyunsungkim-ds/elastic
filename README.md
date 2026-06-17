@@ -26,17 +26,17 @@ Then, follow `tutorial.ipynb` that applies ELASTIC to the [Sportec Open DFL Data
 
 ### 1. Player-ball distances with candidate frames (Section 2.2 & Fig. 2)
 <p align="center">
-  <img src="docs/cand_frames.png" width="80%" />
+  <img src="docs/cand_frames.png"/>
 </p>
 
 ### 2. Pairwise scores (Section 2.3 & Fig. 3a)
 <p align="center">
-  <img src="docs/score_mat.png" width="80%" />
+  <img src="docs/score_mat.png"/>
 </p>
 
 ### 3. DP table for the NW alignment (Section 2.4 & Fig. 3b)
 <p align="center">
-  <img src="docs/dp_table.png" width="80%" />
+  <img src="docs/dp_table.png"/>
 </p>
 
 
