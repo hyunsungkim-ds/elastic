@@ -166,11 +166,6 @@ def aggregate_sync_accuracy(
 #
 # --load reads a pre-saved synced parquet instead of running the syncer.
 # databallpy is external-only and always loaded from disk.
-#
-# Run from repo root:
-#     python experiments/evaluate.py --method elastic_nw [--save]
-#     python experiments/evaluate.py --method elastic_nw --load
-#     python experiments/evaluate.py --method databallpy
 
 import argparse
 
@@ -235,9 +230,11 @@ def main() -> None:
         print(f"\n=== {mid} ===")
         print(counts.round(3))
 
-    total_counts, _ = aggregate_sync_accuracy(per_match)
+    total_counts, total_rates = aggregate_sync_accuracy(per_match)
     print(f"\n=== Total ({args.method}) ===")
     print(total_counts.round(3))
+    print()
+    print(total_rates.round(3))
 
 
 if __name__ == "__main__":
