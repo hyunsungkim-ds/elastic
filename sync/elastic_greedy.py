@@ -5,893 +5,192 @@ from typing import Callable, Tuple
 if not os.getcwd() in sys.path:
     sys.path.append(os.getcwd())
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from scipy.signal import find_peaks, savgol_filter
 from tqdm import tqdm
 
-from sync import config, schema, utils
-from sync.receive import ReceiveDetector
+from sync import config, utils
+from sync.elastic_nw import ELASTIC_NW
 
 
-class ELASTIC_Greedy:
-    """Greedily synchronize event and tracking data in chronological order.
+class ELASTIC_Greedy(ELASTIC_NW):
+    """Synchronize event and tracking data using greedy matching.
+
+    Shares candidate frame selection and event-candidate scoring with ELASTIC_NW,
+    but replaces the global Needleman-Wunsch alignment with greedy matching:
+    each event in chronological order takes the best candidate frame within a
+    qualifying window around its annotated timestamp, and termination events
+    (goal, out, or control) are then detected between the matched frames of
+    their surrounding events.
 
     Parameters
     ----------
     events: pd.DataFrame
-        Event data to synchronize, according to schema sync.schema.event_schema.
+        Event data to synchronize, according to schema sync.schema.elastic_event_schema.
     tracking: pd.DataFrame
         Tracking data to synchronize, according to schema sync.schema.tracking_schema.
-    args : dict, optional
-        Configuration arguments including 'fps' and 'post_sync_types'.
+    fps: float
+        Tracking data FPS.
     """
 
-    def __init__(self, events: pd.DataFrame, tracking: pd.DataFrame, args: dict = None) -> None:
-        schema.elastic_event_schema.validate(events)
-        schema.tracking_schema.validate(tracking)
+    MAJOR_TYPES = config.PASS_LIKE_OPEN + config.SET_PIECE + config.INCOMING
+    MINOR_TYPES = ["tackle", "dispossessed", "take_on"]
 
-        # Ensure unique indices
-        assert list(events.index.unique()) == [i for i in range(len(events))]
-        assert list(tracking.index.unique()) == [i for i in range(len(tracking))]
+    def _annotated_frames(self, events: pd.DataFrame) -> pd.Series:
+        """Map each event's annotated utc_timestamp to the nearest tracking frame."""
+        annot_frames = pd.Series(np.nan, index=events.index)
 
-        self.events = events.copy()
-        self.tracking = tracking
+        for period_id in events["period_id"].dropna().unique():
+            period_events = events[events["period_id"] == period_id]
+            period_frames = self.frames[self.frames["period_id"] == period_id].sort_values("utc_timestamp")
+            if period_frames.empty:
+                continue
 
-        if args is None:
-            self.fps = 25
-            self.post_sync_types = config.MINOR
-        else:
-            self.fps = args["fps"]
-            self.post_sync_types = args["post_sync_types"]
+            aligned = pd.merge_asof(
+                period_events.sort_values("utc_timestamp").reset_index()[["index", "utc_timestamp"]],
+                period_frames.reset_index()[["utc_timestamp", "frame_id"]],
+                on="utc_timestamp",
+                direction="nearest",
+            )
+            annot_frames.loc[aligned["index"]] = aligned["frame_id"].values
 
-        self.pre_sync_types = list(set(config.SPADL_TYPES) - set(self.post_sync_types))
-
-        # Define an episode as a sequence of consecutive in-play frames
-        time_cols = ["frame_id", "period_id", "timestamp", "utc_timestamp"]
-        self.frames = self.tracking[time_cols].drop_duplicates().sort_values("frame_id").set_index("frame_id")
-        self.frames["timestamp"] = self.frames["timestamp"].apply(utils.seconds_to_timestamp)
-        self.frames["episode_id"] = 0
-        n_prev_episodes = 0
-
-        for i in self.events["period_id"].unique():
-            period_frames = self.frames.loc[self.frames["period_id"] == i].index.values
-            episode_ids = (np.diff(period_frames, prepend=-5) >= 5).astype(int).cumsum() + n_prev_episodes
-            self.frames.loc[self.frames["period_id"] == i, "episode_id"] = episode_ids
-            n_prev_episodes = episode_ids.max()
-
-        # Store synchronization results
-        self.last_matched = {"frame": 0, "player_id": None, "spadl_type": None}
-        self.matched_frames = pd.Series(np.nan, index=self.events.index)
-        self.receive_det = None
-
-    def detect_kickoff(self, period: int) -> int:
-        """Searches for the kickoff frame in a given playing period.
-
-        Parameters
-        ----------
-        period: int
-            The given playing period.
-
-        Returns
-        -------
-            The detected kickoff frame.
-        """
-        kickoff_event = self.events[self.events["period_id"] == period].iloc[0]
-
-        if kickoff_event["spadl_type"] != "pass":
-            raise Exception("First event is not a pass!")
-
-        frame = self.tracking.loc[self.tracking["period_id"] == period, "frame_id"].min()
-        frames_to_check = np.arange(frame, frame + self.fps * config.TIME_KICKOFF)
-        kickoff_player = kickoff_event["player_id"]
-
-        inside_center_circle = self.tracking[
-            (self.tracking["frame_id"] == frame)
-            & (self.tracking["player_id"].str.startswith(kickoff_player.split("_")[0]))
-            & (self.tracking["x"] >= config.PITCH_X / 2 - 5)
-            & (self.tracking["x"] <= config.PITCH_X / 2 + 5)
-            & (self.tracking["y"] >= config.PITCH_Y / 2 - 5)
-            & (self.tracking["y"] <= config.PITCH_Y / 2 + 5)
-        ]
-        if len(inside_center_circle) > 1:
-            print("Multiple players inside the center circle at kickoff!")
-            raise ValueError
-
-        ball_window: pd.DataFrame = self.tracking[
-            (self.tracking["frame_id"].isin(frames_to_check))
-            & (self.tracking["period_id"] == period)
-            & self.tracking["ball"]
-            & (self.tracking["x"] >= config.PITCH_X / 2 - 3)
-            & (self.tracking["x"] <= config.PITCH_X / 2 + 3)
-            & (self.tracking["y"] >= config.PITCH_Y / 2 - 3)
-            & (self.tracking["y"] <= config.PITCH_Y / 2 + 3)
-        ]
-        ball_window = ball_window[(ball_window["frame_id"].diff() > 1).astype(int).cumsum() < 1].set_index("frame_id")
-
-        if ball_window.empty:
-            print("The tracking data begins after kickoff!")
-            raise ValueError
-
-        player_window: pd.DataFrame = self.tracking[
-            (self.tracking["frame_id"].isin(frames_to_check))
-            & (self.tracking["period_id"] == period)
-            & (self.tracking["player_id"] == kickoff_player)
-        ]
-        player_window = player_window.set_index("frame_id").loc[ball_window.index]
-
-        player_x = player_window["x"].values
-        player_y = player_window["y"].values
-        ball_x = ball_window["x"].values
-        ball_y = ball_window["y"].values
-        dists = np.sqrt((player_x - ball_x) ** 2 + (player_y - ball_y) ** 2)
-        dist_idxs = np.where(dists < 2.0)[0]
-
-        if len(dist_idxs) == 0:
-            best_idx = np.argmin(dists)
-        else:
-            best_idx = ball_window["accel_v"].values[dist_idxs].argmax()
-
-        return player_window.reset_index()["frame_id"].iloc[best_idx]
-
-    def _window_of_frames(
-        self, event: pd.Series, s: int = 5, min_frame: int = 0, max_frame: int = np.inf
-    ) -> Tuple[int, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        """Identifies the qualifying window of frames around the event's timestamp.
-
-        Parameters
-        ----------
-        event: pd.Series
-            The record of the event to be matched.
-        s: int
-            Window length (in seconds).
-        min_frame: int
-            Minimum frame of windows (typically set as the timestamp of the previously detected event).
-        max_frame: int
-            Maximum frame of windows (typically set as the timestamp of the next detected event).
-
-        Returns
-        -------
-        event_frame: int
-            The closest frame to the recorded event timestamp.
-        player_window: pd.DataFrame
-            All frames of the acting player in the given window.
-        ball_window: pd.DataFrame
-            All frames containing the ball in the given window.
-        oppo_window (optional): pd.DataFrame or None
-            All frames containing the dueling opponent in the given window.
-        """
-        player_id = event["player_id"]
-
-        if event["spadl_type"] in config.SET_PIECE:
-            frame_diffs = abs(self.frames["utc_timestamp"] - event["utc_timestamp"])
-
-            if frame_diffs.min().total_seconds() > s:
-                event_frame = None
-                cand_frames = []
-            else:
-                event_frame = frame_diffs.idxmin()
-                episode = self.frames.at[event_frame, "episode_id"]
-                episode_frames = self.frames[self.frames["episode_id"] == episode].index
-
-                if event_frame - episode_frames[0] < self.fps * s:
-                    cand_frames = self.frames[self.frames["episode_id"] == episode].index[: self.fps]
-                elif event["spadl_type"] == "throw_in":  # Fast throw-ins can happend in the middle of an episode.
-                    cand_frames = np.arange(event_frame - self.fps * s + 1, event_frame + self.fps * s)
-                else:  # Set-pieces except for throw-ins should start an episode. (Otherwise there must be an error.)
-                    cand_frames = []
-
-        elif event["spadl_type"] == "foul":
-            prev_event_ts = self.events.at[event.name - 1, "utc_timestamp"]
-            frame_diffs = abs(self.frames["utc_timestamp"] - prev_event_ts)
-
-            if frame_diffs.min().total_seconds() > s:
-                event_frame = None
-                cand_frames = []
-            else:
-                prev_event_frame = frame_diffs.idxmin()
-                episode = self.frames.at[prev_event_frame, "episode_id"]
-                cand_frames = self.frames[self.frames["episode_id"] == episode].index[-self.fps :]
-                event_frame = cand_frames[-1]
-
-        else:
-            # Find the closest tracking frame and get candidate frames to search through
-            event_frame = abs(self.frames["utc_timestamp"] - event["utc_timestamp"]).idxmin()
-            cand_frames = np.arange(event_frame - self.fps * s + 1, event_frame + self.fps * s)
-
-        # Select all player and ball frames within window range
-        cand_frames = [t for t in cand_frames if t >= min_frame and t <= max_frame]
-        mask = (self.tracking["period_id"] == event["period_id"]) & (self.tracking["frame_id"].isin(cand_frames))
-        window = self.tracking[mask].copy()
-
-        player_window: pd.DataFrame = window[window["player_id"] == player_id].set_index("frame_id")
-        ball_window: pd.DataFrame = window[window["ball"]].set_index("frame_id")
-
-        prev_player_id = self.events.at[event.name - 1, "player_id"] if event.name > 0 else ""
-        next_player_id = player_id if pd.isna(event["next_player_id"]) else event["next_player_id"]
-
-        if not player_window.empty and event["spadl_type"] == "tackle" and prev_player_id[:4] != player_id[:4]:
-            if prev_player_id in window["player_id"].unique():
-                oppo_window = window[window["player_id"] == prev_player_id].set_index("frame_id").copy()
-            else:
-                oppo_window = None
-
-        elif not player_window.empty and event["spadl_type"] == "take_on":
-            if (
-                not event["success"]
-                and event["next_type"] == "tackle"
-                and next_player_id[:4] != player_id[:4]
-                and next_player_id in window["player_id"].unique()
-            ):
-                oppo_window = window[window["player_id"] == next_player_id].set_index("frame_id").copy()
-
-            else:
-                # Find the closest player among the opponents closer than the event player to the target goal
-                goal_x = config.PITCH_X if player_id[:4] == "home" else 0
-                goal_y = config.PITCH_Y / 2
-
-                opponents = [p for p in window["player_id"].unique() if p is not None and p[:4] != player_id[:4]]
-                oppo_x = window[window["player_id"].isin(opponents)].pivot_table("x", "frame_id", "player_id", "first")
-                oppo_y = window[window["player_id"].isin(opponents)].pivot_table("y", "frame_id", "player_id", "first")
-
-                oppo_dist_x = oppo_x.values - player_window[["x"]].values
-                oppo_dist_y = oppo_y.values - player_window[["y"]].values
-                oppo_dists = np.sqrt(oppo_dist_x**2 + oppo_dist_y**2)
-
-                player_xy = player_window[["x", "y"]].reindex(oppo_x.index)
-                player_goal_dists = np.sqrt((player_xy["x"] - goal_x) ** 2 + (player_xy["y"] - goal_y) ** 2)
-                oppo_goal_dists = np.sqrt((oppo_x - goal_x) ** 2 + (oppo_y - goal_y) ** 2)
-                oppo_mask = oppo_goal_dists.le(player_goal_dists + 1, axis=0)
-
-                oppo_dists_masked = np.where(oppo_mask.values, oppo_dists, config.PITCH_X)
-                closest_opponents = oppo_x.columns[np.nanargmin(oppo_dists_masked, axis=1)]
-
-                closest_rows = []
-                for i, frame in enumerate(oppo_x.index):
-                    row = window[(window["frame_id"] == frame) & (window["player_id"] == closest_opponents[i])]
-                    if not row.empty:
-                        closest_rows.append(row)
-
-                if closest_rows:
-                    oppo_window = pd.concat(closest_rows).set_index("frame_id")
-                else:
-                    oppo_window = None
-
-        else:
-            oppo_window = None
-
-        window_idxs = player_window.index.intersection(ball_window.index)
-        player_window = player_window.loc[window_idxs].copy()
-        ball_window = ball_window.loc[window_idxs].copy()
-        if isinstance(oppo_window, pd.DataFrame):
-            oppo_window = oppo_window.loc[window_idxs].copy()
-
-        return event_frame, player_window, ball_window, oppo_window
+        return annot_frames
 
     @staticmethod
-    def _detect_pass_like(features: pd.DataFrame, fps=25) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
-        dist_valleys = find_peaks(-features["player_dist"], prominence=1)[0]
-        candidates = dist_valleys.tolist() + [0]
-
-        height_valleys = find_peaks(-features["ball_height"], prominence=0.5)[0]
-        for i in height_valleys:
-            if not set(range(i - 3, i + 4)) & set(candidates):
-                candidates.append(i)
-
-        accel_peaks = find_peaks(features["ball_accel"], prominence=10, distance=10)[0]
-        for i in accel_peaks:
-            if not set(range(i - 3, i + 4)) & set(candidates):
-                candidates.append(i)
-
-        candidates = np.sort(np.unique(candidates))
-        cand_features = features.iloc[candidates].copy()
-
-        for i in cand_features.index:
-            cand_features.at[i, "player_dist"] = features.loc[i - 3 : i + 3, "player_dist"].min()
-            cand_features.at[i, "ball_height"] = features.loc[i - 3 : i + 3, "ball_height"].min()
-            cand_features.at[i, "ball_accel"] = features.loc[i - 3 : i + 3, "ball_accel"].max()
-
-        cand_features = cand_features[(cand_features["player_dist"] < 3) & (cand_features["ball_height"] < 3.5)]
-
-        if len(cand_features.index) == 0:
-            return np.nan, features, None
-
-        elif len(cand_features.index) == 1:
-            return cand_features.index[0], features, None
-
-        else:
-            for i, frame in enumerate(cand_features.index):
-                next_frame = cand_features.index[i + 1] if i < len(cand_features) - 1 else features.index[-1]
-                cand_features.at[frame, "kick_dist"] = features["player_dist"].loc[frame:next_frame].max()
-
-            cand_features["score"] = utils.greedy_score_major(cand_features)
-            return cand_features["score"].idxmax(), features, cand_features
-
-    @staticmethod
-    def _detect_incoming(features: pd.DataFrame, fps=25, savgol_wlen=9) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
-        if len(features) > savgol_wlen:
-            features["player_dist"] = savgol_filter(features["player_dist"], window_length=savgol_wlen, polyorder=2)
-
-        features["rel_speed"] = features["player_dist"].diff().shift(-1).ffill() * fps
-        features["rel_accel"] = abs(features["rel_speed"].diff().fillna(0) * fps)
-        if len(features) > savgol_wlen:
-            features["rel_accel"] = savgol_filter(features["rel_accel"], window_length=9, polyorder=2)
-
-        dist_valleys = find_peaks(-features["player_dist"], prominence=1)[0]
-        candidates = dist_valleys.tolist() + [0]
-
-        height_valleys = find_peaks(-features["ball_height"], prominence=0.5)[0]
-        for i in height_valleys:
-            if not set(range(i - 3, i + 4)) & set(candidates):
-                candidates.append(i)
-
-        accel_peaks = find_peaks(features["rel_accel"], prominence=10, distance=5)[0]
-        for i in accel_peaks:
-            if not set(range(i - 3, i + 4)) & set(candidates):
-                candidates.append(i)
-
-        candidates = np.sort(np.unique(candidates))
-        cand_features = features.iloc[candidates].copy()
-
-        for i in cand_features.index:
-            cand_features.at[i, "player_dist"] = features.loc[i - 3 : i + 3, "player_dist"].min()
-            cand_features.at[i, "ball_height"] = features.loc[i - 3 : i + 3, "ball_height"].min()
-            cand_features.at[i, "rel_speed"] = features.loc[i - 3 : i + 3, "rel_speed"].max()
-            cand_features.at[i, "ball_accel"] = features.loc[i - 3 : i + 3, "rel_accel"].max()
-
-        cand_features = cand_features[
-            (cand_features["player_dist"] < 3)
-            & (cand_features["ball_height"] < 3.5)
-            & (cand_features["rel_speed"] > -1)
-        ]
-
-        if len(cand_features.index) == 0:
-            return np.nan, features, None
-
-        elif len(cand_features.index) == 1:
-            return cand_features.index[0], features, None
-
-        else:
-            for i, frame in enumerate(cand_features.index):
-                if i == 0:
-                    prev_frame = features.index[0]
-                    kick_dist = max(features["player_dist"].loc[prev_frame:frame].max(), 5)
-                else:
-                    prev_frame = cand_features.index[i - 1]
-                    kick_dist = features["player_dist"].loc[prev_frame:frame].max()
-                cand_features.at[frame, "kick_dist"] = kick_dist
-
-            cand_features["score"] = utils.greedy_score_major(cand_features)
-            return cand_features["score"].idxmax(), features, cand_features
-
-    @staticmethod
-    def _detect_tackle(features: pd.DataFrame, fps=25, savgol_wlen=9) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
-        if "oppo_id" not in features.columns:
-            return np.nan, features, None
-
-        if len(features) > savgol_wlen:
-            features["player_dist"] = savgol_filter(features["player_dist"], window_length=savgol_wlen, polyorder=2)
-            features["oppo_dist"] = savgol_filter(features["oppo_dist"], window_length=savgol_wlen, polyorder=2)
-
-        player_dist_valleys = find_peaks(-features["player_dist"], prominence=0.1)[0] + 1
-        candidates = player_dist_valleys.tolist() + [0]
-
-        oppo_dist_valleys = find_peaks(-features["oppo_dist"], prominence=0.1)[0] + 1
-        for i in oppo_dist_valleys:
-            if not set(range(i - 3, i + 4)) & set(candidates):
-                candidates.append(i)
-
-        height_valleys = find_peaks(-features["ball_height"], prominence=0.5)[0]
-        for i in height_valleys:
-            if not set(range(i - 3, i + 4)) & set(candidates):
-                candidates.append(i)
-
-        accel_peaks = find_peaks(features["ball_accel"], prominence=10, distance=5)[0]
-        for i in accel_peaks:
-            if not set(range(i - 3, i + 4)) & set(candidates):
-                candidates.append(i)
-
-        candidates = np.sort(np.unique(candidates))
-        cand_features = features.iloc[candidates].copy()
-
-        for i in cand_features.index:
-            cand_features.at[i, "player_dist"] = features.loc[i - 3 : i + 3, "player_dist"].min()
-            cand_features.at[i, "oppo_dist"] = features.loc[i - 3 : i + 3, "oppo_dist"].min()
-            cand_features.at[i, "ball_height"] = features.loc[i - 3 : i + 3, "ball_height"].min()
-            cand_features.at[i, "ball_accel"] = features.loc[i - 3 : i + 3, "ball_accel"].max()
-
-        cand_features = cand_features[
-            (cand_features["player_dist"] < 3) & (cand_features["oppo_dist"] < 3) & (cand_features["ball_height"] < 3.5)
-        ]
-
-        if len(cand_features.index) == 0:
-            return np.nan, features, None
-
-        elif len(cand_features.index) == 1:
-            return cand_features.index[0], features, None
-
-        else:
-            for i, frame in enumerate(cand_features.index):
-                next_frame = cand_features.index[i + 1] if i < len(cand_features) - 1 else frame + 2 * fps
-                post_player_dist = features["player_dist"].loc[frame:next_frame].max()
-                post_oppo_dist = features["oppo_dist"].loc[frame:next_frame].max()
-                cand_features.at[frame, "kick_dist"] = max(post_player_dist, post_oppo_dist)
-
-            cand_features["score"] = utils.greedy_score_tackle(cand_features)
-            return cand_features["score"].idxmax(), features, cand_features
-
-    @staticmethod
-    def _detect_take_on(
-        features: pd.DataFrame, fps=25, savgol_wlen=9, secondary=False
-    ) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
-        if "oppo_id" not in features.columns:
-            return np.nan, features, None
-
-        if len(features) > savgol_wlen:
-            features["player_dist"] = savgol_filter(features["player_dist"], window_length=savgol_wlen, polyorder=2)
-
-        dist_valleys = find_peaks(-features["player_dist"], prominence=0.1)[0]
-        candidates = dist_valleys.tolist() + [len(features) - 1]
-        if not secondary:
-            candidates.append(0)
-
-        accel_peaks = find_peaks(features["ball_accel"], prominence=10)[0]
-        for i in accel_peaks:
-            if not set(range(i - 3, i + 4)) & set(candidates):
-                candidates.append(i)
-
-        candidates = np.sort(np.unique(candidates))
-        cand_features = features.iloc[candidates].copy()
-
-        for i in cand_features.index:
-            cand_features.at[i, "player_dist"] = features.loc[i - 3 : i + 3, "player_dist"].min()
-            cand_features.at[i, "player_accel"] = features.loc[i : i + 5, "player_accel"].max()
-            cand_features.at[i, "ball_height"] = features.loc[i - 3 : i + 3, "ball_height"].min()
-            cand_features.at[i, "ball_accel"] = features.loc[i - 3 : i + 3, "ball_accel"].max()
-
-        cand_features = cand_features[(cand_features["player_dist"] < 1.5) & (cand_features["ball_height"] < 2)]
-
-        if len(cand_features.index) == 0:
-            return np.nan, features, None
-
-        elif len(cand_features.index) == 1:
-            return cand_features.index[0], features, None
-
-        else:
-            for i, frame in enumerate(cand_features.index):
-                next_frame = frame + int(0.5 * fps)
-                cand_features.at[frame, "max_speed"] = features["player_speed"].loc[frame:next_frame].max()
-
-                cur_oppo_id = features.at[frame, "oppo_id"]
-                same_oppo_features = features[features["oppo_id"] == cur_oppo_id].copy()
-                before_frame = same_oppo_features.loc[frame - int(0.2 * fps) :].index[0]
-                after_frame = same_oppo_features.loc[: frame + fps].index[-1]
-
-                vec1 = same_oppo_features.loc[before_frame, ["oppo_rel_x", "oppo_rel_y"]].values
-                vec2 = same_oppo_features.loc[after_frame, ["oppo_rel_x", "oppo_rel_y"]].values
-                norm1 = np.linalg.norm(vec1)
-                norm2 = np.linalg.norm(vec2)
-
-                if norm1 > 0 and norm2 > 0:
-                    cand_features.at[frame, "angle_change"] = np.dot(vec1, vec2) / (norm1 * norm2)
-                else:
-                    cand_features.at[frame, "angle_change"] = 0
-
-            cand_features["delta_speed"] = cand_features["max_speed"] - cand_features["player_speed"]
-            cand_features["score"] = utils.greedy_score_takeon(cand_features)
-            return cand_features["score"].idxmax(), features, cand_features
-
-    @staticmethod
-    def _detect_second_take_on(
-        features: pd.DataFrame, fps=25, savgol_wlen=9
-    ) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
-        return ELASTIC_Greedy._detect_take_on(features, fps, savgol_wlen, secondary=True)
-
-    @staticmethod
-    def _detect_dispossessed(features: pd.DataFrame, fps=25, savgol_wlen=9) -> Tuple[float, pd.DataFrame, pd.DataFrame]:
-        if len(features) > savgol_wlen:
-            features["player_dist"] = savgol_filter(features["player_dist"], window_length=savgol_wlen, polyorder=2)
-
-        dist_valleys = find_peaks(-features["player_dist"], prominence=0.1)[0]
-        candidates = dist_valleys.tolist() + [0, len(features) - 1]
-
-        accel_peaks = find_peaks(features["ball_accel"], prominence=10)[0]
-        for i in accel_peaks:
-            if not set(range(i - 3, i + 4)) & set(candidates):
-                candidates.append(i)
-
-        candidates = np.sort(np.unique(candidates))
-        cand_features = features.iloc[candidates].copy()
-
-        for i in cand_features.index:
-            cand_features.at[i, "player_dist"] = features.loc[i - 3 : i + 3, "player_dist"].min()
-            cand_features.at[i, "ball_height"] = features.loc[i - 3 : i + 3, "ball_height"].min()
-            cand_features.at[i, "ball_accel"] = features.loc[i - 3 : i + 3, "ball_accel"].max()
-
-        cand_features = cand_features[(cand_features["player_dist"] < 1.5) & (cand_features["ball_height"] < 3.5)]
-
-        if len(cand_features.index) == 0:
-            return np.nan, features, None
-
-        elif len(cand_features.index) == 1:
-            return cand_features.index[0], features, None
-
-        else:
-            for i, frame in enumerate(cand_features.index):
-                next_frame = cand_features.index[i + 1] if i < len(cand_features) - 1 else frame + 2 * fps
-                cand_features.at[frame, "kick_dist"] = features["player_dist"].loc[frame:next_frame].max()
-
-            cand_features["score"] = utils.greedy_score_dispossessed(cand_features)
-            return cand_features["score"].idxmax(), features, cand_features
-
-    @staticmethod
-    def _detect_setpiece(features: pd.DataFrame, fps=25) -> Tuple[float, pd.DataFrame, None]:
-        cand_features = features[features["player_dist"] < 3]
-        best_frame = cand_features.index[0] if not cand_features.empty else np.nan
-        return best_frame, features, None
-
-    @staticmethod
-    def _detect_foul(features: pd.DataFrame, fps=25) -> Tuple[float, pd.DataFrame, None]:
-        if features.empty:
-            return np.nan, features, None
-        else:
-            frames = features.index.to_numpy()
-            gap_indices = np.where(np.diff(frames) > 1)[0]
-            pause_frame = frames[gap_indices[0]] if len(gap_indices) > 0 else frames[-1]
-            return pause_frame, features, None
-
-    @staticmethod
-    def _find_matching_func(event_type: str) -> Tuple[float, Callable]:
-        if event_type in config.PASS_LIKE_OPEN + ["bad_touch"]:
-            s = config.TIME_PASS_LIKE_OPEN
-            matching_func = ELASTIC_Greedy._detect_pass_like
-        elif event_type in config.SET_PIECE:
-            s = config.TIME_SET_PIECE
-            matching_func = ELASTIC_Greedy._detect_setpiece
+    def _find_window_time(event_type: str) -> float:
+        if event_type in config.SET_PIECE:
+            return config.TIME_SET_PIECE
         elif event_type in config.INCOMING:
-            s = config.TIME_INCOMING
-            matching_func = ELASTIC_Greedy._detect_incoming
-        elif event_type == "tackle":
-            s = config.TIME_INCOMING
-            matching_func = ELASTIC_Greedy._detect_tackle
+            return config.TIME_INCOMING
+        elif event_type in ELASTIC_Greedy.MINOR_TYPES:
+            return config.TIME_MINOR
+        else:  # PASS_LIKE_OPEN including bad_touch
+            return config.TIME_PASS_LIKE_OPEN
+
+    @staticmethod
+    def _find_score_fn(event_type: str) -> Callable:
+        if event_type in ["tackle", "dispossessed"]:
+            return utils.nw_score_minor
         elif event_type == "take_on":
-            s = config.TIME_MINOR
-            matching_func = ELASTIC_Greedy._detect_take_on
-        elif event_type == "second_take_on":
-            s = config.TIME_MINOR
-            matching_func = ELASTIC_Greedy._detect_second_take_on
-        elif event_type == "dispossessed":
-            s = config.TIME_MINOR
-            matching_func = ELASTIC_Greedy._detect_dispossessed
-        elif event_type == "foul":
-            s = config.TIME_MINOR
-            matching_func = ELASTIC_Greedy._detect_foul
+            return utils.nw_score_takeon
         else:
-            s = 0
-            matching_func = None
-        return s, matching_func
+            return utils.nw_score_major
 
-    def _find_matching_frame(
-        self,
-        matching_func: Callable,
-        event_frame: int,
-        player_window: pd.DataFrame,
-        ball_window: pd.DataFrame,
-        oppo_window: pd.DataFrame = None,
-    ) -> Tuple[float, pd.DataFrame]:
-        """Finds the matching frame of the given event within the given window.
+    @staticmethod
+    def _best_candidate(window: pd.DataFrame, player_id: str, event_type: str) -> Tuple[float, float]:
+        """Find the matching candidate frame for the given event in the window.
 
-        Parameters
-        ----------
-        matching_func: Callable
-            One of the action-specific matching function, depending on the event's type.
-        event_idx: int
-            The index of the event to be matched.
-        event_frame: int
-            The closest frame to the recorded event timestamp.
-        player_window: pd.DataFrame
-            All frames of the acting player within a certain window.
-        ball_window: pd.DataFrame
-            All frames of the ball within the same window.
-        oppo_window (optional): pd.DataFrame or None
-            All frames of the dueling opponent within the same window.
-
-        Returns
-        -------
-        best_frame: int
-            Index of the matching frame in the tracking dataframe.
-        features: pd.DataFrame
-            Features for each frame in the window that is used for matching.
+        Set pieces take the executing player's first candidate frame
+        (the first player-ball distance minimum below 3 m among in-play frames);
+        the other events take the highest-scoring candidate frame.
         """
-        player_x = player_window["x"].values
-        player_y = player_window["y"].values
-        ball_x = ball_window["x"].values
-        ball_y = ball_window["y"].values
+        cands = window[window["player_id"] == player_id]
+        if cands.empty:
+            return np.nan, np.nan
 
-        features = pd.DataFrame(index=player_window.index)
-        features["frame_delay"] = (features.index.values - event_frame - config.FRAME_DELAY_START * self.fps).clip(0)
-        features["player_speed"] = player_window["speed"].values
-        features["player_accel"] = player_window["accel_v"].values
-        features["ball_accel"] = ball_window["accel_v"].values
-        features["ball_height"] = ball_window["z"].values
-        features["player_dist"] = np.sqrt((player_x - ball_x) ** 2 + (player_y - ball_y) ** 2)
+        if event_type in config.SET_PIECE:
+            return float(cands.iloc[0]["frame_id"]), np.nan
 
-        if oppo_window is not None:
-            oppo_x = oppo_window["x"].values
-            oppo_y = oppo_window["y"].values
-            features["oppo_id"] = oppo_window["player_id"].values
-            features["oppo_rel_x"] = player_x - oppo_x
-            features["oppo_rel_y"] = player_y - oppo_y
-            features["oppo_dist"] = np.sqrt(features["oppo_rel_x"] ** 2 + features["oppo_rel_y"] ** 2)
+        # "control" was historically in config.INCOMING; keep is_incoming=True as in ELASTIC_NW.
+        is_incoming = event_type in config.INCOMING + ["bad_touch", "tackle", "control"]
+        scores = ELASTIC_Greedy._find_score_fn(event_type)(cands, player_id, incoming=is_incoming)
 
-        return matching_func(features, fps=self.fps)
+        best = int(np.argmax(scores))
+        if scores[best] <= 0:
+            return np.nan, np.nan
+        return float(cands.iloc[best]["frame_id"]), float(scores[best])
 
-    def _sync_major_events(self, period: int) -> None:
-        """Synchronizes the event and tracking data of a given playing period.
-
-        Parameters
-        ----------
-        period: int
-            The playing period of which to synchronize the event and tracking data.
-        """
-        period_events = self.events[self.events["period_id"] == period].copy()
-        major_events = period_events[period_events["spadl_type"].isin(self.pre_sync_types)]
-
-        for i in tqdm(major_events.index[1:], desc=f"Syncing major events in period {period}"):
-            event_type = self.events.at[i, "spadl_type"]
-            player_id = self.events.at[i, "player_id"]
-            min_frame = self.last_matched["frame"]
-
-            if (
-                event_type in config.PASS_LIKE_OPEN + config.SET_PIECE
-                and self.last_matched["spadl_type"] in config.PASS_LIKE_OPEN
-                and player_id == self.last_matched["player_id"]
-            ):
-                min_frame += 5
-
-            s, matching_func = ELASTIC_Greedy._find_matching_func(event_type)
-            windows = self._window_of_frames(self.events.loc[i], s, min_frame)
-
-            if len(windows[1]) > 0:
-                best_frame = self._find_matching_frame(matching_func, *windows)[0]
-                if best_frame == best_frame:
-                    self.matched_frames[i] = best_frame
-                    self.last_matched["frame"] = best_frame
-                    self.last_matched["player_id"] = self.events.at[i, "player_id"]
-                    self.last_matched["spadl_type"] = self.events.at[i, "spadl_type"]
-
-    def _sync_minor_events(self) -> None:
-        minor_events = self.events[self.events["spadl_type"].isin(self.post_sync_types)]
-
-        if minor_events.empty:
-            return
-
-        self.events.loc[minor_events.index, "frame_id"] = np.nan
-        self.matched_frames.loc[minor_events.index] = np.nan
-
-        for i in tqdm(minor_events.index, desc="Post-syncing minor events"):
-            event_type = self.events.at[i, "spadl_type"]
-            event_player = self.events.at[i, "player_id"]
-
-            if event_type == "bad_touch":
-                prev_receive_frame = self.events.at[i - 1, "receive_frame_id"]
-                prev_receiver = self.events.at[i - 1, "receiver_id"]
-                if event_player == prev_receiver and not np.isnan(prev_receive_frame):
-                    self.matched_frames[i] = prev_receive_frame
-                    continue
-
-            if event_type == "dispossessed" and self.events.at[i, "next_type"] == "tackle":
-                # First synchronize the following tackle and assign the tackling frame to the dispossessed event
-                if "tackle" in self.post_sync_types:
-                    continue
-                else:
-                    # The next tackle has been already synchronized in the previous stage
-                    next_frame = self.matched_frames[i + 1]
-                    if not np.isnan(next_frame):
-                        self.matched_frames[i] = next_frame
-                        continue
-
-            if event_type == "foul" and self.events.at[i - 1, "spadl_type"] == "foul":
-                prev_frame = self.matched_frames[i - 1]
-                if not np.isnan(prev_frame):
-                    self.matched_frames[i] = prev_frame
-                    continue
-
-            if self.events.at[i - 1, "spadl_type"] == "take_on" and event_type == "take_on":
-                event_type = "second_take_on"
-
-            prev_frames = self.matched_frames.loc[: i - 1].values
-            prev_receive_frames = self.events.loc[: i - 1, "receive_frame_id"].values - int(0.2 * self.fps)
-            min_frame = np.nanmax([np.nanmax(prev_frames), np.nanmax(prev_receive_frames), 0])
-
-            next_frames = self.matched_frames[i:].values
-            if np.all(np.isnan(next_frames)):
-                max_frame = np.inf
-            else:
-                max_frame = np.nanmin([np.nanmin(next_frames), self.frames.index[-1]])
-
-            s, matching_func = ELASTIC_Greedy._find_matching_func(event_type)
-            windows = self._window_of_frames(minor_events.loc[i], s, min_frame, max_frame)
-
-            if len(windows[1]) > 0:
-                best_frame = self._find_matching_frame(matching_func, *windows)[0]
-                if not pd.isna(best_frame):
-                    self.matched_frames[i] = best_frame
-                    if event_type == "tackle" and self.events.at[i - 1, "spadl_type"] == "dispossessed":
-                        self.matched_frames[i - 1] = best_frame
-
-    def run(self) -> None:
-        """
-        Applies the ELASTIC synchronization algorithm on the instantiated class.
-        """
-        kickoff_idx = 0
-
-        for period in self.events["period_id"].unique():
-            period_events: pd.DataFrame = self.events[self.events["period_id"] == period]
-            self.events.loc[period_events.index, "next_player_id"] = period_events.shift(-1)["player_id"]
-            self.events.loc[period_events.index, "next_type"] = period_events.shift(-1)["spadl_type"]
-
-            try:  # STEP 1: Kick-off detection for the current period
-                best_frame = self.detect_kickoff(period=period)
-
-                # Adjust the time bias between events and tracking
-                ts_offset = self.events.at[kickoff_idx, "utc_timestamp"] - self.frames.at[best_frame, "utc_timestamp"]
-                self.events.loc[period_events.index, "utc_timestamp"] -= ts_offset
-
-            except ValueError:  # If there is no candidate frames for the kickoff, then find the second event
-                best_frame = self.frames[self.frames["period_id"] == period].index[0]
-
-                # kickoff_idx += 1
-                # windows = self._window_of_frames(self.events.loc[kickoff_idx], 5)
-                # best_frame = self._find_matching_frame(ELASTIC._detect_pass_like, *windows)[0]
-
-            self.matched_frames.loc[kickoff_idx] = best_frame
-            self.last_matched["frame"] = best_frame
-            self.last_matched["player_id"] = self.events.at[kickoff_idx, "player_id"]
-            self.last_matched["spadl_type"] = self.events.at[kickoff_idx, "spadl_type"]
-
-            kickoff_idx = len(self.events[self.events["period_id"] == period])
-
-            # STEP 2: Major event synchronization for the current period
-            self._sync_major_events(period)
-
-        self.events["frame_id"] = self.matched_frames
-
-        # STEP 3: Receive detection
-        self.receive_det = ReceiveDetector(self.events, self.tracking)
-        self.receive_det.run()
-        self.events = self.receive_det.events
-
-        # STEP 4: Minor event synchronization
-        self._sync_minor_events()
-
-        self.events["frame_id"] = self.matched_frames
-        self.events["synced_ts"] = self.events["frame_id"].map(self.frames["timestamp"].to_dict())
-        self.events["receive_ts"] = self.events["receive_frame_id"].map(self.frames["timestamp"].to_dict())
-
-        return self.events
-
-    def plot_window_features(self, event_idx: int, display_title: bool = True, save_path: str = None) -> pd.DataFrame:
-        """
-        Plots the feature time-series for a given event for validation.
-
-        Parameters
-        ----------
-        event_idx: int
-            The index of the event to be matched.
-
-        Returns
-        -------
-        features: pd.DataFrame
-            Features for each frame in the window that is used for matching.
-        """
-        event = self.events.loc[event_idx]
-        event_type = event["spadl_type"]
-
-        if event_idx > 0 and self.events.at[event_idx - 1, "spadl_type"] == "take_on" and event_type == "take_on":
-            event_type = "second_take_on"
-
-        s, matching_func = ELASTIC_Greedy._find_matching_func(event_type)
-        print(f"Event {event_idx}: {event_type} by {event['player_id']}")
-
-        prev_matched = self.matched_frames.loc[: event_idx - 1].dropna() if event_idx > 0 else np.array([0])
-        min_frame = prev_matched.iloc[-1] if len(prev_matched) > 0 else 0
-
-        # prev_frames = self.matched_frames.loc[: event_idx - 1].values if event_idx > 0 else np.array([0])
-        # min_frame = np.nanmax([np.nanmax(prev_frames), 0])
-
-        if event_type in self.post_sync_types and event["next_type"] not in self.post_sync_types:
-            next_frames = self.matched_frames.loc[event_idx + 1 :].values
-            max_frame = np.nanmin([np.nanmin(next_frames), np.inf])
-            windows = self._window_of_frames(event, s, min_frame, max_frame)
+    def run(self, events: pd.DataFrame = None, simplify_one_touch: bool = True) -> pd.DataFrame:
+        """Runs greedy matching between events and candidate frames across the full match."""
+        if events is None:
+            events = self.events.copy().drop(columns=["frame_id", "synced_ts", "score"], errors="ignore")
         else:
-            if len(prev_matched) > 0:
-                prev_matched_idx = prev_matched.index[-1]
-                prev_event_type = self.events.at[prev_matched_idx, "spadl_type"]
-                prev_player_id = self.events.at[prev_matched_idx, "player_id"]
-                if (
-                    event_type in config.PASS_LIKE_OPEN + config.SET_PIECE
-                    and prev_event_type in config.PASS_LIKE_OPEN
-                    and prev_player_id == event["player_id"]
-                ):
-                    min_frame += 5
-            windows = self._window_of_frames(event, s, min_frame)
+            events = events.copy()
 
-        best_frame, features, cand_features = self._find_matching_frame(matching_func, *windows)
+        if self.cand_frames is None:
+            self.cand_frames = self.find_candidate_frames()
 
-        if not pd.isna(best_frame):
-            matched_period = self.frames.at[best_frame, "period_id"]
-            matched_time = self.frames.at[best_frame, "timestamp"]
-            print(f"Matched frame: {best_frame}")
-            print(f"Matched time: P{matched_period}-{matched_time}")
+        if "pre_kick_dist" not in self.cand_frames.columns:
+            self.cand_frames = self.calculate_kick_dists(self.cand_frames)
 
-        else:
-            period_id = self.events.at[event_idx, "period_id"]
-            period_events = self.events[self.events["period_id"] == period_id]
-            kickoff_frame = period_events["frame_id"].iloc[0]
-            kickoff_ts = period_events["utc_timestamp"].iloc[0]
+        if "player_speed" not in self.cand_frames.columns:
+            self.cand_frames = self.calculate_takeon_features(self.cand_frames)
 
-            recorded_ts = self.events.at[event_idx, "utc_timestamp"]
-            recorded_total_seconds = (recorded_ts - kickoff_ts).total_seconds()
-            recorded_frame = int(kickoff_frame + self.fps * recorded_total_seconds)
-            print(f"Recorded frame: {recorded_frame}")
+        cands = self.cand_frames.sort_values("frame_id").reset_index(drop=True)
+        cand_frame_ids = cands["frame_id"].to_numpy()
 
-            if abs(self.frames.index.values - recorded_frame).min() < self.fps * config.TIME_SET_PIECE:
-                recorded_frame = self.frames.index[abs(self.frames.index.values - recorded_frame).argmin()]
-                period = self.frames.at[recorded_frame, "period_id"]
-                recorded_time = self.frames.at[recorded_frame, "timestamp"]
-                print(f"Closest time: P{period}-{recorded_time}")
-            else:
-                print("Out-of-play at the recorded frame.")
+        def window_between(start_frame: float, end_frame: float) -> pd.DataFrame:
+            lo = np.searchsorted(cand_frame_ids, start_frame, side="left")
+            hi = np.searchsorted(cand_frame_ids, end_frame, side="right")
+            return cands.iloc[lo:hi]
 
-        if features.empty:
-            return
+        stage1_types = ELASTIC_Greedy.MAJOR_TYPES + ELASTIC_Greedy.MINOR_TYPES
+        annot_frames = self._annotated_frames(events)
+        matched_frames = pd.Series(np.nan, index=events.index)
+        matched_scores = pd.Series(np.nan, index=events.index)
 
-        else:
-            features["frame_delay"] = features["frame_delay"] / 5
-            if event_type in config.INCOMING:
-                features["ball_accel"] = features["rel_accel"] / 5
-            else:
-                features["ball_accel"] = features["ball_accel"] / 5
+        # Stage 1: Greedily match events in chronological order.
+        min_frame = 0.0
+        last_period = None
 
-            plt.close("all")
-            plt.rcParams.update({"font.size": 15})
-            plt.figure(figsize=(8, 4))
+        stage1_mask = events["spadl_type"].isin(stage1_types)
+        for i in tqdm(events.index[stage1_mask], desc="Greedy matching"):
+            period_id = events.at[i, "period_id"]
+            if period_id != last_period:
+                period_frames = self.frames[self.frames["period_id"] == period_id]
+                min_frame = float(period_frames.index.min()) if not period_frames.empty else 0.0
+                last_period = period_id
 
-            colors = {"ball_accel": "tab:orange", "player_dist": "tab:blue"}
-            if event_type.endswith("take_on"):
-                colors.update({"player_speed": "tab:purple", "oppo_dist": "tab:green"})
-            elif event_type == "tackle":
-                colors.update({"oppo_dist": "tab:green"})
-            else:
-                colors.update({"frame_delay": "tab:green"})
+            annot_frame = annot_frames[i]
+            if np.isnan(annot_frame):
+                continue
 
-            for feat, color in colors.items():
-                plt.plot(features[feat], label=feat, c=color)
+            player_id = events.at[i, "player_id"]
+            event_type = events.at[i, "spadl_type"]
 
-            ymax = 25
-            plt.ylim(0, ymax)
-            plt.vlines(windows[0], 0, ymax, color="k", linestyles="-", label="annot_frame")
+            s = ELASTIC_Greedy._find_window_time(event_type)
+            start_frame = max(min_frame, annot_frame - s * self.fps)
+            end_frame = annot_frame + s * self.fps
+            window = window_between(start_frame, end_frame)
 
-            if isinstance(cand_features, pd.DataFrame):
-                cand_frames = [t for t in cand_features.index if t != best_frame]
-                plt.vlines(cand_frames, 0, ymax, color="black", linestyles="--", label="cand_frame")
-                plt.vlines(best_frame, 0, ymax, color="red", linestyles="-", label="best_frame")
+            frame, score = ELASTIC_Greedy._best_candidate(window, player_id, event_type)
+            if not np.isnan(frame):
+                matched_frames[i] = frame
+                matched_scores[i] = score
+                min_frame = frame
 
-            elif not pd.isna(best_frame):
-                plt.vlines(best_frame, 0, ymax, color="red", linestyles="-", label="best_frame")
+        # Stage 2: Detect each termination event (goal, out, or control) between the synchronized frames.
+        stage1_idxs = events.index[stage1_mask].to_numpy()
 
-            plt.legend(loc="upper right", fontsize=12)
-            plt.grid(axis="y")
-            plt.xticks(rotation=45)
+        for i in tqdm(events.index[events["spadl_type"].isin(config.EVENT_END)], desc="Detecting terminations"):
+            player_id = events.at[i, "player_id"]
+            event_type = events.at[i, "spadl_type"]
 
-            if display_title:
-                plt.title(f"{event_type} at frame {best_frame}")
+            prev_matched = matched_frames.loc[:i].dropna()
+            if prev_matched.empty:
+                continue
+            start_frame = float(prev_matched.iloc[-1])
 
-            if save_path is not None:
-                plt.savefig(save_path, bbox_inches="tight")
+            next_idxs = stage1_idxs[stage1_idxs > i]
+            next_matched = matched_frames[next_idxs].dropna()
+            end_frame = float(next_matched.iloc[0]) if not next_matched.empty else np.inf
+            window = window_between(start_frame, end_frame)
 
-            plt.show()
+            frame, score = ELASTIC_Greedy._best_candidate(window, player_id, event_type)
+            if not np.isnan(frame):
+                matched_frames[i] = frame
+                matched_scores[i] = score
 
-        return cand_features
+        events["frame_id"] = matched_frames.round()
+        events["score"] = matched_scores
+        events.loc[events["score"] < 0.5, "frame_id"] = np.nan
+        events["synced_ts"] = events["frame_id"].map(self.frames["timestamp"].to_dict())
+
+        self.synced_events = events.copy()
+
+        if simplify_one_touch:
+            control_mask = events["spadl_type"] == "control"
+            one_touch_mask = (events["frame_id"].shift(-1) == events["frame_id"]) | events["frame_id"].shift(-1).isna()
+            events = events.loc[~(control_mask & one_touch_mask)].reset_index(drop=True)
+
+        return events

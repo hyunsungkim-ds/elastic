@@ -55,34 +55,17 @@ EVENT_CAT_MAP = (
     | {x: "event_end" for x in EVENT_END if x != "foul"}
 )
 
-TIME_KICKOFF = 5  # Stats Perform: 5, Sportec: 5 (seconds)
-TIME_PASS_LIKE_OPEN = 10  # Stats Perform: 5, Sportec: 10 (seconds)
-TIME_SET_PIECE = 15  # Stats Perform: 15, Sportec: 15 (seconds)
-TIME_INCOMING = 10  # Stats Perform: 5, Sportec: 10 (seconds)
-TIME_MINOR = 10  # Stats Perform: 5, Sportec: 10 (seconds)
-FRAME_DELAY_START = 0  # Stats Perform: 0, Sportec: -1 (seconds)
+TIME_KICKOFF = 5
+TIME_PASS_LIKE_OPEN = 5
+TIME_SET_PIECE = 15
+TIME_INCOMING = 5
+TIME_MINOR = 5
 
 # Additional event categories and parameters for ETSY
 BAD_TOUCH = ["bad_touch"]
 FAULT_LIKE = ["foul", "tackle", "dispossessed"]
-NOT_HANDLED = ["take_on", "second_take_on"]
 
 TIME_BAD_TOUCH = 5
 TIME_FAULT_LIKE = 5
 
-EVENT_COLS = [
-    "frame_id",
-    "period_id",
-    "synced_ts",
-    "utc_timestamp",
-    "player_id",
-    "object_id",
-    "player_name",
-    "advanced_position",
-    "spadl_type",
-    "success",
-    "offside",
-    "expected_goal",
-]
-NEXT_EVENT_COLS = ["next_player_id", "next_type", "receiver_id", "receive_frame_id", "receive_ts"]
 ALIGNED_COLS = ["frame_id", "period_id", "episode_id", "timestamp", "player_id", "spadl_type", "success", "score"]

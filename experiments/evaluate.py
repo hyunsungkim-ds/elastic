@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 
@@ -7,8 +8,37 @@ if __name__ == "__main__" and __package__ is None:
 import numpy as np
 import pandas as pd
 
-from sync import config
+from sync import config, schema
 from sync.utils import collapse_events
+
+# Shared constants for the Sportec benchmark.
+MATCH_IDS = ["J03WMX", "J03WN1", "J03WPY"]
+INPUT_DIR = "data/sportec/event_corrected"  # syncer input events ({mid}.parquet)
+SYNCED_DIR = "data/sportec/event_synced"  # cached synced outputs per method
+GT_DIR = f"{SYNCED_DIR}/gt"  # ground-truth events ({mid}.parquet)
+RESULT_DIR = "experiments"  # sweep result CSVs
+FPS = 25  # tracking frame rate of the Sportec dataset
+
+
+def load_data(match_ids: list[str] = MATCH_IDS) -> dict[str, dict]:
+    """Load input_events / gt (from cached parquet) + tracking (via SportecData) once per match.
+
+    Input events come from {INPUT_DIR}/{mid}.parquet and GT from {GT_DIR}/{mid}.parquet
+    (both produced by experiments/benchmark.py), NOT rebuilt from _merged.csv.
+    """
+    from tools.sportec_data import SportecData
+
+    cache: dict[str, dict] = {}
+    elastic_cols = list(schema.elastic_event_schema.columns.keys())
+    for mid in match_ids:
+        input_events = pd.read_parquet(f"{INPUT_DIR}/{mid}.parquet")
+        gt = pd.read_parquet(f"{GT_DIR}/{mid}.parquet")
+        cache[mid] = {
+            "input_events": input_events[elastic_cols],
+            "gt": gt,
+            "tracking": SportecData(mid).format_tracking_for_syncer(),
+        }
+    return cache
 
 
 def _frame_metrics(pred_frames: pd.Series, true_frames: pd.Series, thresholds: list[int]) -> dict[str, float]:
@@ -167,19 +197,13 @@ def aggregate_sync_accuracy(
 # --load reads a pre-saved synced parquet instead of running the syncer.
 # databallpy is external-only and always loaded from disk.
 
-import argparse
-
-MATCH_IDS = ["J03WMX", "J03WN1", "J03WPY"]
-INPUT_DIR = "data/sportec/event_corrected"
-SYNCED_DIR = "data/sportec/event_synced"
-
 
 def _run_syncer(method: str, input_events: pd.DataFrame, tracking: pd.DataFrame) -> pd.DataFrame:
-    from sync import elastic_greedy, elastic_nw, etsy, schema
+    from sync import elastic_greedy, elastic_nw, etsy
 
     if method == "elastic_nw":
         cols = list(schema.elastic_event_schema.columns.keys())
-        return elastic_nw.ELASTIC_NW(input_events[cols], tracking, detect_controls=True).run()
+        return elastic_nw.ELASTIC_NW(input_events[cols], tracking).run()
     if method == "elastic_greedy":
         cols = list(schema.elastic_event_schema.columns.keys())
         return elastic_greedy.ELASTIC_Greedy(input_events[cols], tracking).run()
@@ -214,7 +238,7 @@ def main() -> None:
 
     per_match: dict[str, tuple[pd.DataFrame, pd.DataFrame]] = {}
     for mid in MATCH_IDS:
-        gt = pd.read_parquet(f"{SYNCED_DIR}/gt/{mid}.parquet")
+        gt = pd.read_parquet(f"{GT_DIR}/{mid}.parquet")
 
         if load:
             synced = pd.read_parquet(f"{SYNCED_DIR}/{args.method}/{mid}.parquet")
