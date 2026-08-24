@@ -1,9 +1,11 @@
-# Data and video files
+# Private files
 private/
 data/
 animations/
+experiments/*.csv
 docs/*.pdf
 .claude/
+CLAUDE.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
