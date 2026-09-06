@@ -76,20 +76,54 @@ class ELASTIC_Greedy(ELASTIC_NW):
         else:
             return utils.nw_score_major
 
-    @staticmethod
-    def _best_candidate(window: pd.DataFrame, player_id: str, event_type: str) -> Tuple[float, float]:
+    SP_POST_SLOPE_MIN = 0.28  # minimum post-slope (m/frame) for a set-piece kick candidate (7 m/s at 25 fps)
+
+    def _find_restart_episode(self, start_frame: float, end_frame: float) -> float:
+        """Return the first episode whose first in-play frame lies within the window, if any.
+
+        A set piece whose qualifying window contains an episode start is assumed
+        to restart play with that episode; otherwise it occurs mid-episode.
+        """
+        pos = int(np.searchsorted(self._episode_start_arr, start_frame, side="left"))
+        if pos < len(self._episode_start_arr) and self._episode_start_arr[pos] <= end_frame:
+            return self._episode_id_arr[pos]
+        return None
+
+    def _best_setpiece_candidate(self, cands: pd.DataFrame, restart_episode: float) -> Tuple[float, float]:
+        """Find the matching candidate frame for an episode-restarting set piece.
+
+        Candidates are restricted to the restarting episode, preventing matches
+        to the executing player's last touches in the previous episode when the
+        annotated timestamp precedes the actual kick. Among the remaining
+        candidates, the first one where the ball clearly departs from the player
+        (post-slope above SP_POST_SLOPE_MIN) is taken; if none qualifies, the
+        one with the highest ball acceleration is taken.
+        """
+        episode_cands = cands[cands["episode_id"] == restart_episode]
+        if not episode_cands.empty:
+            cands = episode_cands
+
+        departing = cands["post_slope"] >= ELASTIC_Greedy.SP_POST_SLOPE_MIN
+        if departing.any():
+            return float(cands[departing].iloc[0]["frame_id"]), np.nan
+        best = int(np.argmax(cands["ball_accel"].to_numpy()))
+        return float(cands.iloc[best]["frame_id"]), np.nan
+
+    def _best_candidate(
+        self, window: pd.DataFrame, player_id: str, event_type: str, restart_episode: float = None
+    ) -> Tuple[float, float]:
         """Find the matching candidate frame for the given event in the window.
 
-        Set pieces take the executing player's first candidate frame
-        (the first player-ball distance minimum below 3 m among in-play frames);
-        the other events take the highest-scoring candidate frame.
+        Episode-restarting set pieces are handled by `_best_setpiece_candidate`;
+        the other events (including mid-episode set pieces) take the
+        highest-scoring candidate frame.
         """
         cands = window[window["player_id"] == player_id]
         if cands.empty:
             return np.nan, np.nan
 
-        if event_type in config.SET_PIECE:
-            return float(cands.iloc[0]["frame_id"]), np.nan
+        if event_type in config.SET_PIECE and restart_episode is not None:
+            return self._best_setpiece_candidate(cands, restart_episode)
 
         # "control" was historically in config.INCOMING; keep is_incoming=True as in ELASTIC_NW.
         is_incoming = event_type in config.INCOMING + ["bad_touch", "tackle", "control"]
@@ -118,6 +152,10 @@ class ELASTIC_Greedy(ELASTIC_NW):
 
         cands = self.cand_frames.sort_values("frame_id").reset_index(drop=True)
         cand_frame_ids = cands["frame_id"].to_numpy()
+
+        episode_firsts = self.frames.reset_index().groupby("episode_id")["frame_id"].min().sort_values()
+        self._episode_id_arr = episode_firsts.index.to_numpy()
+        self._episode_start_arr = episode_firsts.to_numpy()
 
         def window_between(start_frame: float, end_frame: float) -> pd.DataFrame:
             lo = np.searchsorted(cand_frame_ids, start_frame, side="left")
@@ -151,9 +189,18 @@ class ELASTIC_Greedy(ELASTIC_NW):
             s = ELASTIC_Greedy._find_window_time(event_type)
             start_frame = max(min_frame, annot_frame - s * self.fps)
             end_frame = annot_frame + s * self.fps
+
+            restart_episode = None
+            if event_type in config.SET_PIECE:
+                restart_episode = self._find_restart_episode(start_frame, end_frame)
+                if restart_episode is None:  # Mid-episode set piece: same window as open-play events
+                    s = config.TIME_PASS_LIKE_OPEN
+                    start_frame = max(min_frame, annot_frame - s * self.fps)
+                    end_frame = annot_frame + s * self.fps
+
             window = window_between(start_frame, end_frame)
 
-            frame, score = ELASTIC_Greedy._best_candidate(window, player_id, event_type)
+            frame, score = self._best_candidate(window, player_id, event_type, restart_episode)
             if not np.isnan(frame):
                 matched_frames[i] = frame
                 matched_scores[i] = score
@@ -176,7 +223,7 @@ class ELASTIC_Greedy(ELASTIC_NW):
             end_frame = float(next_matched.iloc[0]) if not next_matched.empty else np.inf
             window = window_between(start_frame, end_frame)
 
-            frame, score = ELASTIC_Greedy._best_candidate(window, player_id, event_type)
+            frame, score = self._best_candidate(window, player_id, event_type)
             if not np.isnan(frame):
                 matched_frames[i] = frame
                 matched_scores[i] = score
