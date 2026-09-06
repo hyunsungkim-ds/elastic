@@ -2,7 +2,7 @@
 private/
 data/
 animations/
-experiments/*.csv
+experiments/results/
 docs/*.pdf
 .claude/
 CLAUDE.md

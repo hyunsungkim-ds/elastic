@@ -1,17 +1,11 @@
-"""Annotation-side processing for evaluation benchmarks.
+"""Builds the ground-truth benchmark from the multi-annotator event labels (paper Table 1).
 
-Reads a ``corrected_events`` table — the cross-rater consensus produced by multiple annotators
-on top of a provider's event stream — and turns it into the syncer input format.
+Input: per-annotator CSVs ({match_id}_merged.csv under INPUT_DIR) and Sportec tracking data.
+Output: syncer input events and GT events as parquet under INPUT_DIR / GT_DIR, plus the
+per-category inter-annotator agreement printed to stdout.
 
-- :func:`build_corrected_events`   →  syncer input (7-col ELASTIC/ETSY schema)
-- :func:`build_gt`                 →  ground-truth events for
-                                      :func:`tools.evaluate.compute_sync_accuracy`
-- :func:`compute_reliability`      →  per-category inter-annotator agreement
-- :func:`aggregate_reliability`    →  multi-match reliability rollup
-
-The annotation schema (``{annotator}_ts`` columns, ``mm:ss.cc`` timestamps,
-``error_type`` labels) is shared across providers, so this module is not
-Sportec-specific.
+Run from the repo root:
+    python experiments/benchmark.py
 """
 
 from __future__ import annotations
@@ -27,10 +21,10 @@ if __name__ == "__main__" and __package__ is None:
 import numpy as np
 import pandas as pd
 
+from experiments.evaluate import FPS, GT_DIR, INPUT_DIR, MATCH_IDS, set_display_options
 from sync import config
 from sync.utils import collapse_events
 
-FPS = 25
 LOOKAHEAD = 30
 
 
@@ -56,7 +50,7 @@ def _discover_annotators(input_dir: str, match_id: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# timestamp helpers — annotation tool writes "mm:ss.cc"
+# Timestamp helpers: the annotation tool writes "mm:ss.cc"
 
 
 def _ts_to_sec(ts) -> float:
@@ -102,7 +96,7 @@ def _period_starts(tracking: pd.DataFrame, fps: int = FPS) -> tuple[dict, dict]:
 
 
 # ---------------------------------------------------------------------------
-# build_corrected_events helpers
+# Syncer input helpers: align the provider stream against the annotated events
 
 
 def _match_score(
@@ -190,7 +184,7 @@ def _make_missing_row(
 
 
 # ---------------------------------------------------------------------------
-# public API
+# Benchmark construction and annotator agreement
 
 
 def build_syncer_input_events(
@@ -296,10 +290,7 @@ def build_gt_events(
     df = corrected_events[corrected_events["error_type"] != "false_positive"].copy().reset_index(drop=True)
     df["_sec"] = df.apply(lambda r: _median_sec(r, annotators), axis=1)
     df["synced_ts"] = df["_sec"].map(_sec_to_ts)
-    df["frame_id"] = df.apply(
-        lambda r: int(round(starts_frame[int(r["period_id"])] + r["_sec"] * fps)),
-        axis=1,
-    )
+    df["frame_id"] = df.apply(lambda r: int(round(starts_frame[int(r["period_id"])] + r["_sec"] * fps)), axis=1)
     df["success"] = df["outcome"].astype(bool)
     df["offside"] = False
 
@@ -433,28 +424,13 @@ def aggregate_annot_reliability(per_match: dict[str, pd.DataFrame]) -> pd.DataFr
     return summed
 
 
-# ---------------------------------------------------------------------------
-# GT benchmark construction (paper Section 3.1 + Table 1)
-#
-# Produces the syncer input parquet + GT parquet consumed by evaluate.py,
-# and prints the inter-annotator agreement table.
-#
-# Run from repo root:
-#     python experiments/benchmark.py
-
-MATCH_IDS = ["J03WMX", "J03WN1", "J03WPY"]
-INPUT_DIR = "data/sportec/event_corrected"
-SYNCED_DIR = "data/sportec/event_synced"
-
-
 def main() -> None:
     from tools.sportec_data import SportecData
 
-    pd.set_option("display.width", 250)
-    pd.set_option("display.max_columns", 30)
+    set_display_options()
 
     annotators = _discover_annotators(INPUT_DIR, MATCH_IDS[0])
-    os.makedirs(f"{SYNCED_DIR}/gt", exist_ok=True)
+    os.makedirs(GT_DIR, exist_ok=True)
 
     per_match: dict[str, pd.DataFrame] = {}
     for mid in MATCH_IDS:
@@ -464,7 +440,7 @@ def main() -> None:
         corrected = pd.read_csv(f"{INPUT_DIR}/{mid}_merged.csv")
 
         build_syncer_input_events(provider, corrected, tracking, annotators).to_parquet(f"{INPUT_DIR}/{mid}.parquet")
-        build_gt_events(corrected, tracking, annotators).to_parquet(f"{SYNCED_DIR}/gt/{mid}.parquet")
+        build_gt_events(corrected, tracking, annotators).to_parquet(f"{GT_DIR}/{mid}.parquet")
 
         per_match[mid] = compute_annot_reliability(corrected, tracking, annotators)
         print(f"\n=== {mid} ===")
