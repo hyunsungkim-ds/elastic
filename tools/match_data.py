@@ -58,7 +58,12 @@ class MatchData(ABC):
     def format_events_for_syncer(self) -> pd.DataFrame:
         pass
 
-    def format_tracking_for_syncer(self) -> pd.DataFrame:
+    def format_tracking_for_syncer(self, margin: int = 0) -> pd.DataFrame:
+        """Long-format tracking of in-play frames for the syncers.
+
+        margin > 0 additionally keeps dead-ball frames within ``margin`` frames of an in-play frame,
+        so that the Biermann syncer can score frames at episode boundaries such as set-piece kicks.
+        """
         tracking = self.tracking.copy()
 
         if "frame_id" not in tracking.columns or "utc_timestamp" not in tracking.columns:
@@ -103,7 +108,15 @@ class MatchData(ABC):
                     tracking_list.append(period_tracking)
 
         out = pd.concat(tracking_list, ignore_index=True)
-        out = out[out["ball_state"] == "alive"].drop("ball_state", axis=1).reset_index(drop=True)
+        if margin:
+            states = out[["frame_id", "period_id", "ball_state"]].drop_duplicates("frame_id").sort_values("frame_id")
+            keep = states.groupby("period_id")["ball_state"].transform(
+                lambda s: (s == "alive").astype(float).rolling(2 * margin + 1, center=True, min_periods=1).max() > 0
+            )
+            out = out[out["frame_id"].isin(states.loc[keep.values, "frame_id"])]
+        else:
+            out = out[out["ball_state"] == "alive"]
+        out = out.drop("ball_state", axis=1).reset_index(drop=True)
         return out.astype({"period_id": int, "z": float})
 
     @staticmethod
