@@ -34,16 +34,16 @@ def linear_scoring_func(min_input: float, max_input: float, increasing=False) ->
 
 
 # Scoring functions for ELASTIC
-player_dist_func = linear_scoring_func(1, 3, increasing=False)
+player_dist_func = linear_scoring_func(0, 3, increasing=False)
 out_dist_func = linear_scoring_func(0, 1, increasing=False)
 player_speed_func = linear_scoring_func(0, 5, increasing=True)
 player_accel_func = linear_scoring_func(0, 5, increasing=True)
 ball_accel_func = linear_scoring_func(0, 30, increasing=True)
-kick_dist_func = linear_scoring_func(0, 5, increasing=True)
+kick_dist_func = linear_scoring_func(0, 3, increasing=True)
 angle_change_func = linear_scoring_func(0, 1, increasing=False)  # increasing from 0 to pi in radian
 frame_delay_func = linear_scoring_func(0, 125, increasing=False)
-positive_slope_penalty = linear_scoring_func(0, 0.2, increasing=False)
-negative_slope_penalty = linear_scoring_func(-0.2, 0, increasing=True)
+positive_slope_penalty = linear_scoring_func(0, 0.28, increasing=False)  # 7 m/s at 25 fps
+negative_slope_penalty = linear_scoring_func(-0.28, 0, increasing=True)  # 7 m/s at 25 fps
 
 
 # Per-term weights for nw_score_major / nw_score_minor.

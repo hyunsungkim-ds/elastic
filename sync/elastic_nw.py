@@ -14,6 +14,20 @@ from tqdm import tqdm
 
 from sync import config, schema, utils
 
+# Candidate frame detection hyperparameters
+CAND_USE_PBD_VALLEYS = True  # use player-ball distance valleys
+CAND_USE_BBD_VALLEYS = True  # use boundary-ball distance valleys (out_*/goal_*)
+CAND_USE_ACCEL_PEAKS = True  # use ball acceleration peaks
+CAND_PBD_MAX = 3.0  # player-ball distance gate in meters
+CAND_BBD_MAX = 1.0  # boundary-ball distance gate in meters
+CAND_BALL_HEIGHT_MAX = 4.0  # ball height gate in meters
+
+# NW alignment and postprocessing hyperparameters
+GAP_EVENT = 0.0
+GAP_FRAME = 0.0
+REPEAT_PENALTY = -0.1  # penalty for matching two consecutive events to one frame
+REJECT_THRESHOLD = 0.5  # matches scoring below this are left unsynchronized
+
 
 class ELASTIC_NW:
     """Synchronize event and tracking data using Needleman-Wunsch based global alignment.
@@ -23,11 +37,11 @@ class ELASTIC_NW:
 
     Parameters
     ----------
-    events : pd.DataFrame
+    events: pd.DataFrame
         Event data to synchronize, according to schema sync.schema.event_schema.
-    tracking : pd.DataFrame
+    tracking: pd.DataFrame
         Tracking data to synchronize, according to schema sync.schema.tracking_schema.
-    fps : float
+    fps: float
         Tracking data FPS.
     """
 
@@ -298,18 +312,25 @@ class ELASTIC_NW:
                     return pd.DataFrame()
 
                 is_out = str(player_id).startswith("out_")
+                is_virtual = str(player_id).startswith(("out_", "goal_"))
 
                 # Detect player_dist valleys
                 dist_arr = features["player_dist"].to_numpy()
-                dist_valleys = find_peaks(-dist_arr, height=-3, distance=3, prominence=0.3)[0]
-                cand_idx = set(dist_valleys.tolist())
+                use_valleys = CAND_USE_BBD_VALLEYS if is_virtual else CAND_USE_PBD_VALLEYS
+                if use_valleys:
+                    height = None if np.isinf(CAND_PBD_MAX) else -CAND_PBD_MAX
+                    dist_valleys = find_peaks(-dist_arr, height=height, distance=3, prominence=0.3)[0]
+                    cand_idx = set(dist_valleys.tolist())
+                else:
+                    cand_idx = set()
 
                 # Add ball accel peaks not already covered within ±3 frames
-                accel_pos = features.index.get_indexer(accel_peak_frames)
-                accel_pos = accel_pos[accel_pos >= 0]
-                for i in accel_pos:
-                    if not any(abs(i - c) <= 3 for c in cand_idx):
-                        cand_idx.add(int(i))
+                if CAND_USE_ACCEL_PEAKS:
+                    accel_pos = features.index.get_indexer(accel_peak_frames)
+                    accel_pos = accel_pos[accel_pos >= 0]
+                    for i in accel_pos:
+                        if not any(abs(i - c) <= 3 for c in cand_idx):
+                            cand_idx.add(int(i))
 
                 first_pos = features.index.get_indexer([episode_frames[0]])[0]
                 if first_pos >= 0:
@@ -348,9 +369,11 @@ class ELASTIC_NW:
                 player_cands["post_slope"] = (post_dist - cur_dist) / slope_window
 
                 if is_out:
-                    valid_mask = player_cands["player_dist"] < 1
+                    valid_mask = player_cands["player_dist"] < CAND_BBD_MAX
                 else:
-                    valid_mask = (player_cands["player_dist"] < 3) & (player_cands["ball_height"] < 3.5)
+                    valid_mask = (player_cands["player_dist"] < CAND_PBD_MAX) & (
+                        player_cands["ball_height"] < CAND_BALL_HEIGHT_MAX
+                    )
                 player_cands = player_cands[valid_mask]
 
                 # Drop flat-slope candidates that have a neighbor within ±10 frames
@@ -916,12 +939,9 @@ class ELASTIC_NW:
             frame_pos = [frame_pos_map[frame_id] for frame_id in player_scores.index]
             score_mat[i, frame_pos] = player_scores.to_numpy()
 
-        gap_event = 0.1
-        gap_frame = 0.0
-        repeat_threshold = 0.5
-
-        event_players = ep_events["player_id"].to_numpy()
-        event_types = ep_events["spadl_type"].to_numpy()
+        gap_event = GAP_EVENT
+        gap_frame = GAP_FRAME
+        repeat_penalty = REPEAT_PENALTY
 
         dp_mat = np.zeros((n_events + 1, n_frames + 1), dtype=float)
         trace = np.zeros((n_events + 1, n_frames + 1), dtype=np.int8)
@@ -938,18 +958,7 @@ class ELASTIC_NW:
                 diag = dp_mat[i - 1, j - 1] + score_mat[i - 1, j - 1]
                 up_gap = dp_mat[i - 1, j] + gap_event
                 left_gap = dp_mat[i, j - 1] + gap_frame
-                up_match = -np.inf
-                if score_mat[i - 1, j - 1] >= repeat_threshold:
-                    if event_players[i - 1] == event_players[i - 2]:
-                        if event_types[i - 1] in [event_types[i - 2], "bad_touch"]:
-                            repeat_penalty = -0.3
-                        elif event_types[i - 1] == "ball_recovery":
-                            repeat_penalty = -0.1
-                        else:
-                            repeat_penalty = 0.0
-                    else:
-                        repeat_penalty = -0.1
-                    up_match = dp_mat[i - 1, j] + score_mat[i - 1, j - 1] + repeat_penalty
+                up_match = dp_mat[i - 1, j] + score_mat[i - 1, j - 1] + repeat_penalty
                 if diag >= up_gap and diag >= left_gap and diag >= up_match:
                     dp_mat[i, j] = diag
                     trace[i, j] = 0
@@ -1083,7 +1092,7 @@ class ELASTIC_NW:
 
             events.loc[aligned.index, "frame_id"] = aligned["frame_id"].round()
             events.loc[aligned.index, "score"] = aligned["score"]
-            events.loc[events["score"] < 0.3, "frame_id"] = np.nan
+            events.loc[events["score"] < REJECT_THRESHOLD, "frame_id"] = np.nan
         else:
             aligned = pd.DataFrame(columns=config.ALIGNED_COLS)
 
@@ -1234,7 +1243,7 @@ class ELASTIC_NW:
                 letter = "C"
             else:
                 letter = "M"
-            ax.scatter([fid], [25], s=300, c="tab:red", zorder=5, clip_on=False)
+            ax.scatter([fid], [25], s=300, c="tab:red", marker="s", zorder=5, clip_on=False)
             ax.text(
                 fid,
                 24.9,
@@ -1242,7 +1251,7 @@ class ELASTIC_NW:
                 ha="center",
                 va="center",
                 color="white",
-                fontsize=12,
+                fontsize=14,
                 fontweight="bold",
                 zorder=6,
                 clip_on=False,
