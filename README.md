@@ -1,11 +1,12 @@
 <h1 align="center">ELASTIC</h1>
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-3.9+-blue.svg" alt="Python Version: 3.9+" />
-  <a href="https://opensource.org/licenses/MPL-2.0">
-    <img src="https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg" alt="License: MPL 2.0" />
-  </a>
-</p>
+<div align="center">
+
+![Python](https://img.shields.io/badge/Python-3.9+-blue)
+[![arXiv](https://img.shields.io/badge/arXiv-2508.09238-b31b1b)](https://arxiv.org/abs/2508.09238)
+[![License: MPL 2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen)](https://opensource.org/licenses/MPL-2.0)
+
+</div>
 
 Source code for the paper [ELASTIC: Event-Tracking Data Synchronization in Soccer Without Annotated Event Locations](https://dtai.cs.kuleuven.be/events/MLSA25/papers/MLSA25_paper_181.pdf) by Kim et al., MLSA 2025.
 
@@ -48,10 +49,10 @@ Following `tutorial.ipynb`, you can plot features around a given event to see ho
   <img src="docs/feat_tackle.png" width="48%" />
 </p>
 
-## Research
-If you make use of this package in your research, please consider citing the following paper:
-```
-@inproceedings{Kim2025,
+## Citation
+If you use this code in your research, please consider citing our paper:
+```bibtex
+@inproceedings{kim2025elastic,
   author       = {Hyunsung Kim and
                   Hoyoung Choi and
                   Sangwoo Seo and
