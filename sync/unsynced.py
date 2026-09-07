@@ -29,7 +29,7 @@ class Unsynced:
         self.tracking = tracking
         self.fps = fps
 
-        # Build frames table identically to ELASTIC_Greedy/ReceiveDetector
+        # Build frames table identically to ELASTIC_Greedy
         time_cols = ["frame_id", "period_id", "timestamp", "utc_timestamp"]
         self.frames = self.tracking[time_cols].drop_duplicates().sort_values("frame_id").set_index("frame_id")
         self.frames["timestamp"] = self.frames["timestamp"].apply(utils.seconds_to_timestamp)
