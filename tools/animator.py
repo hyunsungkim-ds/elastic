@@ -13,6 +13,7 @@ import pandas as pd
 from matplotlib import animation, axes, collections, lines, text
 
 import tools.matplotsoccer as mps
+from sync import config
 from sync.elastic_nw import ELASTIC_NW
 from tools.sportec_data import SportecData
 
@@ -27,7 +28,12 @@ anim_config = {
     "cell_size": 50,
     "player_history": 20,
     "ball_history": 50,
+    "start_color": "w",  # star for a synchronized original event
+    "end_color": "orange",  # star for an inserted control / out / goal event
+    "annot_color": "k",  # cross for an annotated event
 }
+TEAM_COLORS = {"home": "tab:red", "away": "tab:blue"}
+PITCH_SIZE = (105, 68)
 
 
 class Animator:
@@ -57,7 +63,7 @@ class Animator:
         self.rotate_pitch = rotate_pitch
         self.anonymize = anonymize
 
-        self.pitch_size = (105, 68) if self.sports == "soccer" else (30, 15)
+        self.pitch_size = PITCH_SIZE if self.sports == "soccer" else (30, 15)
         self.small_image = small_image
         self.play_speed = play_speed
 
@@ -74,7 +80,7 @@ class Animator:
         if len(tracking.columns) == 0:
             return None
 
-        color = "tab:red" if tracking.columns[0].startswith("home_") else "tab:blue"
+        color = TEAM_COLORS[tracking.columns[0].split("_")[0]]
         x = tracking[tracking.columns[0::2]].values
         y = tracking[tracking.columns[1::2]].values
         size = sizes[0, 0] if isinstance(sizes, np.ndarray) else sizes
@@ -316,10 +322,14 @@ class Animator:
             event_text.set_animated(True)
 
             if "event_x" in main_tracking.columns:
-                event_args = Animator.plot_events(main_tracking[["event_x", "event_y"]], ax, color="orange", marker="*")
+                event_args = Animator.plot_events(
+                    main_tracking[["event_x", "event_y"]], ax, color=anim_config["start_color"], marker="*"
+                )
 
             if "annot_x" in main_tracking.columns:
-                annot_args = Animator.plot_events(main_tracking[["annot_x", "annot_y"]], ax, color="k", marker="X")
+                annot_args = Animator.plot_events(
+                    main_tracking[["annot_x", "annot_y"]], ax, color=anim_config["annot_color"], marker="X"
+                )
 
         if self.text_cols is not None:
             str_dict = {}
@@ -378,6 +388,124 @@ class Animator:
         plt.close(fig)
 
         return anim
+
+
+def plot_snapshot(
+    merged_data: pd.DataFrame,
+    period_id: int,
+    t_start: float,
+    t_end: float,
+    player_history: int = anim_config["player_history"],
+    show_legend: bool = False,
+    ax: plt.Axes = None,
+    save_path: str = None,
+) -> plt.Axes:
+    """Draw one still of a time window: the whole ball path, the recent player trails, and the events in between."""
+    data = merged_data[merged_data["period_id"] == period_id].sort_values("frame_id").reset_index(drop=True)
+    if data.empty:
+        raise ValueError(f"No tracking frames in period {period_id}.")
+    seconds = data["timestamp"]
+    if isinstance(seconds.iloc[0], timedelta):
+        seconds = seconds.dt.total_seconds()
+    in_window = seconds.between(t_start, t_end)
+    window = data[in_window]
+    if window.empty:
+        raise ValueError(f"No tracking frames in period {period_id} between {t_start} s and {t_end} s.")
+
+    def event_rows(cols: list[str]) -> pd.DataFrame:
+        """Rows where an event starts; a change test keeps ffilled event columns from repeating."""
+        if not set(cols).issubset(data.columns):
+            return data.iloc[:0]
+        starts = data[cols].ne(data[cols].shift()).any(axis=1) & data[cols[0]].notna()
+        return data[starts & in_window]
+
+    synced_events = event_rows(["event_x", "event_y", "player_id", "event_type"])
+    is_event_end = synced_events["event_type"].isin(config.EVENT_END)
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=anim_config["figsize"])
+        fig.subplots_adjust(left=0, right=1, bottom=0.05, top=0.95)
+    mps.field("green", PITCH_SIZE[0], PITCH_SIZE[1], ax.figure, ax, show=False)
+
+    # Players at the last frame, each with a dotted trail as animate_players draws it.
+    last_frame = window["frame_id"].iloc[-1]
+    trail_window = window[window["frame_id"] > last_frame - player_history]
+    for team, color in TEAM_COLORS.items():
+        for x_col in [c for c in window.columns if c.startswith(f"{team}_") and c.endswith("_x")]:
+            player = x_col[:-2]
+            trail = trail_window[[x_col, f"{player}_y"]].dropna()
+            if trail.empty:
+                continue
+            ax.plot(trail[x_col], trail[f"{player}_y"], c=color, ls=":", zorder=0)
+            x, y = trail.iloc[-1]
+            ax.scatter(x, y, s=anim_config["player_size"], c=color, zorder=2)
+            ax.annotate(
+                int(player.split("_")[-1]),
+                (x, y),
+                ha="center",
+                va="center",
+                color="w",
+                fontsize=anim_config["fontsize"] - 2,
+                fontweight="bold",
+                zorder=3,
+            )
+
+    ball = window[["ball_x", "ball_y"]].dropna()
+    ax.plot(ball["ball_x"], ball["ball_y"], c="k", zorder=3)
+    ax.scatter(
+        ball["ball_x"].iloc[-1], ball["ball_y"].iloc[-1], s=anim_config["ball_size"], c="w", edgecolors="k", zorder=4
+    )
+
+    start_events = synced_events[~is_event_end]
+    ax.scatter(
+        start_events["event_x"],
+        start_events["event_y"],
+        s=anim_config["star_size"],
+        c=anim_config["start_color"],
+        edgecolors="k",
+        marker="*",
+        zorder=100,
+    )
+
+    end_events = synced_events[is_event_end]
+    ax.scatter(
+        end_events["event_x"],
+        end_events["event_y"],
+        s=anim_config["star_size"],
+        c=anim_config["end_color"],
+        edgecolors="k",
+        marker="*",
+        zorder=100,
+    )
+
+    annot_events = event_rows(["annot_x", "annot_y"])
+    ax.scatter(
+        annot_events["annot_x"],
+        annot_events["annot_y"],
+        s=anim_config["annot_size"],
+        c=anim_config["annot_color"],
+        marker="X",
+        zorder=100,
+    )
+
+    if show_legend:
+        # Proxy handles, so the legend does not depend on which event kinds occur in the window.
+        star_pts, annot_pts = anim_config["star_size"] ** 0.5, anim_config["annot_size"] ** 0.5
+        markers = [
+            ("*", star_pts, anim_config["start_color"], "k", "Synced event start"),
+            ("*", star_pts, anim_config["end_color"], "k", "Synced event end"),
+            ("X", annot_pts, anim_config["annot_color"], "none", "Annotated event"),
+        ]
+        handles = [
+            lines.Line2D([], [], ls="None", marker=m, ms=ms, mfc=mfc, mec=mec, label=label)
+            for m, ms, mfc, mec, label in markers
+        ]
+        legend = ax.legend(handles=handles, loc="upper right", fontsize=anim_config["fontsize"], framealpha=0.9)
+        legend.set_zorder(200)
+
+    if save_path is not None:
+        ax.figure.savefig(save_path, bbox_inches="tight")
+    return ax
 
 
 if __name__ == "__main__":
