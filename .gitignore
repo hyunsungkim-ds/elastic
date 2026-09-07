@@ -2,6 +2,7 @@
 private/
 data/
 animations/
+benchmark/synced/
 experiments/results/
 docs/*.pdf
 .claude/

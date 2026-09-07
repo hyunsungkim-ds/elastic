@@ -1,7 +1,7 @@
 """Builds the ground-truth benchmark from the multi-annotator event labels (paper Table 1).
 
-Input: per-annotator CSVs ({match_id}_merged.csv under INPUT_DIR) and Sportec tracking data.
-Output: syncer input events and GT events as parquet under INPUT_DIR / GT_DIR, plus the
+Input: per-annotator CSVs ({match_id}_merged.csv under ANNOT_DIR) and Sportec tracking data.
+Output: syncer input events and GT events as parquet under UNSYNCED_DIR / GT_DIR, plus the
 per-category inter-annotator agreement printed to stdout.
 
 Run from the repo root:
@@ -21,11 +21,14 @@ if __name__ == "__main__" and __package__ is None:
 import numpy as np
 import pandas as pd
 
-from experiments.evaluate import FPS, GT_DIR, INPUT_DIR, MATCH_IDS, set_display_options
+from experiments.evaluate import ANNOT_DIR, FPS, GT_DIR, MATCH_IDS, UNSYNCED_DIR, set_display_options
 from sync import config
 from sync.utils import collapse_events
 
 LOOKAHEAD = 30
+
+# Columns fed to collapse_events; it appends receiver_id / receive_frame_id / receive_ts.
+GT_COLS = ["period_id", "player_id", "spadl_type", "frame_id", "synced_ts"]
 
 
 def _discover_annotators(input_dir: str, match_id: str) -> list[str]:
@@ -291,19 +294,8 @@ def build_gt_events(
     df["_sec"] = df.apply(lambda r: _median_sec(r, annotators), axis=1)
     df["synced_ts"] = df["_sec"].map(_sec_to_ts)
     df["frame_id"] = df.apply(lambda r: int(round(starts_frame[int(r["period_id"])] + r["_sec"] * fps)), axis=1)
-    df["success"] = df["outcome"].astype(bool)
-    df["offside"] = False
 
-    keep_cols = [
-        "period_id",
-        "player_id",
-        "spadl_type",
-        "frame_id",
-        "synced_ts",
-        "success",
-        "offside",
-    ]
-    return collapse_events(df[keep_cols]).reset_index(drop=True)
+    return collapse_events(df[GT_COLS]).reset_index(drop=True)
 
 
 def compute_annot_reliability(
@@ -327,8 +319,6 @@ def compute_annot_reliability(
     _, starts_frame = _period_starts(tracking, fps)
 
     df = corrected_events[corrected_events["error_type"] != "false_positive"].copy().reset_index(drop=True)
-    df["success"] = df["outcome"].astype(bool)
-    df["offside"] = False
 
     for ann in annotators:
         df[f"{ann}_frame"] = df.apply(
@@ -339,21 +329,12 @@ def compute_annot_reliability(
     # Run collapse_events once per annotator. spadl_type/player_id/period_id
     # are shared, so the resulting row structure is identical across the three;
     # only frame_id / receive_frame_id values differ.
-    cols_for_collapse = [
-        "period_id",
-        "player_id",
-        "spadl_type",
-        "frame_id",
-        "synced_ts",
-        "success",
-        "offside",
-    ]
     collapsed_per_ann = {}
     for ann in annotators:
         df_ann = df.copy()
         df_ann["frame_id"] = df_ann[f"{ann}_frame"]
         df_ann["synced_ts"] = df_ann[f"{ann}_ts"]
-        collapsed_per_ann[ann] = collapse_events(df_ann[cols_for_collapse]).reset_index(drop=True)
+        collapsed_per_ann[ann] = collapse_events(df_ann[GT_COLS]).reset_index(drop=True)
 
     collapsed = collapsed_per_ann[annotators[0]][["period_id", "spadl_type"]].copy()
     collapsed["event_cat"] = collapsed["spadl_type"].map(config.EVENT_CAT_MAP)
@@ -429,7 +410,8 @@ def main() -> None:
 
     set_display_options()
 
-    annotators = _discover_annotators(INPUT_DIR, MATCH_IDS[0])
+    annotators = _discover_annotators(ANNOT_DIR, MATCH_IDS[0])
+    os.makedirs(UNSYNCED_DIR, exist_ok=True)
     os.makedirs(GT_DIR, exist_ok=True)
 
     per_match: dict[str, pd.DataFrame] = {}
@@ -437,9 +419,9 @@ def main() -> None:
         sportec = SportecData(mid)
         tracking = sportec.format_tracking_for_syncer()
         provider = sportec.format_events_for_syncer().reset_index(drop=True)
-        corrected = pd.read_csv(f"{INPUT_DIR}/{mid}_merged.csv")
+        corrected = pd.read_csv(f"{ANNOT_DIR}/{mid}_merged.csv")
 
-        build_syncer_input_events(provider, corrected, tracking, annotators).to_parquet(f"{INPUT_DIR}/{mid}.parquet")
+        build_syncer_input_events(provider, corrected, tracking, annotators).to_parquet(f"{UNSYNCED_DIR}/{mid}.parquet")
         build_gt_events(corrected, tracking, annotators).to_parquet(f"{GT_DIR}/{mid}.parquet")
 
         per_match[mid] = compute_annot_reliability(corrected, tracking, annotators)

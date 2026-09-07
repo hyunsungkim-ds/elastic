@@ -3,7 +3,7 @@
 Also defines the benchmark constants, data loader, and accuracy metrics that the sweep
 scripts import, so that every script reports the same numbers.
 
-Input: syncer input events and GT events under INPUT_DIR / GT_DIR (built by benchmark.py).
+Input: syncer input events and GT events under UNSYNCED_DIR / GT_DIR (built by benchmark.py).
 Output: per-match and total accuracy tables printed to stdout.
 
 Run from the repo root:
@@ -26,9 +26,10 @@ from sync.utils import collapse_events
 
 # Shared constants for the Sportec benchmark.
 MATCH_IDS = ["J03WMX", "J03WN1", "J03WPY"]
-INPUT_DIR = "data/sportec/event_corrected"  # syncer input events ({mid}.parquet)
-SYNCED_DIR = "data/sportec/event_synced"  # cached synced outputs per method
-GT_DIR = f"{SYNCED_DIR}/gt"  # ground-truth events ({mid}.parquet)
+ANNOT_DIR = "data/sportec/event_corrected"  # per-annotator labels ({mid}_{annotator}.csv)
+UNSYNCED_DIR = "benchmark/unsynced"  # events with unsynchronized timestamps ({mid}.parquet)
+SYNCED_DIR = "benchmark/synced"  # cached synced outputs per method
+GT_DIR = "benchmark/gt"  # ground-truth events ({mid}.parquet)
 RESULT_DIR = "experiments/results"  # sweep result CSVs
 FPS = 25  # tracking frame rate of the Sportec dataset
 
@@ -41,7 +42,7 @@ TIME_BUFFERS = [0, 2, 5, 25, 50]  # |pred - true| in frames; 0 is reported as "e
 def load_data(match_ids: list[str] = MATCH_IDS, margin: int = 0) -> dict[str, dict]:
     """Load input_events / gt (from cached parquet) + tracking (via SportecData) once per match.
 
-    Input events come from {INPUT_DIR}/{mid}.parquet and GT from {GT_DIR}/{mid}.parquet
+    Input events come from {UNSYNCED_DIR}/{mid}.parquet and GT from {GT_DIR}/{mid}.parquet
     (both produced by experiments/benchmark.py), NOT rebuilt from _merged.csv.
     ``margin`` is forwarded to ``format_tracking_for_syncer``.
     """
@@ -50,7 +51,7 @@ def load_data(match_ids: list[str] = MATCH_IDS, margin: int = 0) -> dict[str, di
     cache: dict[str, dict] = {}
     elastic_cols = list(schema.elastic_event_schema.columns.keys())
     for mid in match_ids:
-        input_events = pd.read_parquet(f"{INPUT_DIR}/{mid}.parquet")
+        input_events = pd.read_parquet(f"{UNSYNCED_DIR}/{mid}.parquet")
         gt = pd.read_parquet(f"{GT_DIR}/{mid}.parquet")
         cache[mid] = {
             "input_events": input_events[elastic_cols],
@@ -314,7 +315,7 @@ def main() -> None:
             if args.save:
                 synced.to_parquet(f"{SYNCED_DIR}/{args.method}/{mid}.parquet")
         else:
-            input_events = pd.read_parquet(f"{INPUT_DIR}/{mid}.parquet")
+            input_events = pd.read_parquet(f"{UNSYNCED_DIR}/{mid}.parquet")
             tracking = sportec_data_cls(mid).format_tracking_for_syncer()
             synced = _run_syncer(args.method, input_events, tracking)
             if args.save:
